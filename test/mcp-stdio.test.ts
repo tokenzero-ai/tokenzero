@@ -43,7 +43,7 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
     { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'calculate_model_arbitrage', arguments: { model: 'gpt-6-astra', input_tokens: 3000, output_tokens: 300, static_tokens: 2000 } } },
     { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'optimize_prompt_payload', arguments: { body: { model: 'gpt-6.1-sol' } } } },
     { jsonrpc: '2.0', id: 6, method: 'nope' },
-  ], dir);
+  ], dir, { TOKENZERO_URL: 'http://127.0.0.1:9' }); // closed port: hermetic, whatever URL the bundle has baked in
   const by = (id: number) => res.find(r => r.id === id);
   assert.equal(by(1).result.protocolVersion, '2025-06-18');
   assert.equal(by(1).result.serverInfo.version, JSON.parse(fs.readFileSync('mcp/package.json', 'utf8')).version, 'MCP version matches mcp/package.json');
@@ -52,8 +52,8 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
   assert.equal(audit.repo_kind, 'app');
   assert.ok(audit.findings.some((f: any) => f.severity === 'high' && /static prompt/.test(f.title)));
   assert.equal(by(4).result.structuredContent.alternatives[0].model, 'gpt-6.1-sol');
-  assert.equal(by(5).result.isError, true, 'no TOKENZERO_URL configured → clear tool error');
-  assert.match(by(5).result.content[0].text, /TOKENZERO_URL/);
+  assert.equal(by(5).result.isError, true, 'unreachable service → clear tool error, not a crash');
+  assert.match(by(5).result.content[0].text, /could not reach the TokenZero service at http:\/\/127\.0\.0\.1:9 .*TOKENZERO_URL/);
   assert.equal(by(6).error.code, -32601);
   assert.equal(res.length, 6, 'no response to notifications');
 });

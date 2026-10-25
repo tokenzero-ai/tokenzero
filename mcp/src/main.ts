@@ -15,7 +15,7 @@ import { modelArbitrage } from '../../src/arbitrage.ts';
 import { PRICING_VERSION } from '../../src/pricing.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
@@ -57,7 +57,8 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case 'optimize_prompt_payload': {
       const base = serviceUrl();
       if (!base) throw new Error('set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)');
-      const r = await fetch(base + '/mcp', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+      const r = await fetch(base + '/mcp', { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+        .catch((e: any) => { throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`); });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
       const j: any = await r.json();
       if (j.error) throw new Error(j.error.message);

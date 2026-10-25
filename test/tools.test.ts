@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { analyzeFiles, detectRepoKind, lex } from '../src/audit-core.ts';
+import { analyzeFiles, detectRepoKind, lex, prComment } from '../src/audit-core.ts';
 import { costOf, normalizeModel } from '../src/pricing.ts';
 
 const run = promisify(execFile);
@@ -25,6 +25,23 @@ test('analyzer: flags an uncached Anthropic prompt in an app, downgrades in a li
   assert.ok(app.findings.some(f => f.severity === 'high'));
   assert.ok(!lib.findings.some(f => f.severity === 'high'));
   assert.equal(detectRepoKind([{ path: 'pyproject.toml', content: '[project]\nname = "agent"\n' }], []).kind, 'unknown');
+});
+
+test('analyzer: each finding lands on the call that owns the prompt', () => {
+  const src = [
+    'from openai import OpenAI', 'client = OpenAI()', 'SYSTEM = "You are a helpful assistant. " * 200', '',
+    'def summarize(text):', '    return client.chat.completions.create(', '        model="gpt-4o",',
+    '        messages=[{"role": "user", "content": SYSTEM + "Summarize: " + text}], max_tokens=4096)', '',
+    'def classify(text):', '    return client.chat.completions.create(', '        model="gpt-4o",',
+    '        messages=[{"role": "user", "content": "Classify sentiment as pos/neg: " + text}])', '',
+  ].join('\n');
+  const r = analyzeFiles([{ path: 'app.py', content: src }]);
+  const lines = (re: RegExp) => r.findings.filter(f => re.test(f.title)).map(f => f.line);
+  assert.deepEqual(lines(/extraction\/classification/), [11], 'routing finding on classify() only');
+  assert.deepEqual(lines(/Repeat-prone/), [11]);
+  assert.match(r.findings.find(f => /static prompt tokens/.test(f.title))!.detail, /call at app\.py:6/, '"..." * 200 expanded and attributed to summarize()');
+  assert.ok(r.estimated_waste_pct > 0);
+  assert.match(prComment(r), new RegExp(`\\(${r.estimated_waste_pct}% recoverable\\)`), 'header agrees with the findings');
 });
 
 test('pricing: list-price math', () => {

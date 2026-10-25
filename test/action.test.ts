@@ -61,7 +61,9 @@ test('action: posts one marked comment, updates it on the next push, summary and
   assert.equal(comments.length, 1);
   assert.ok(comments[0].body.startsWith('<!-- tokenzero-cost-check -->'));
   assert.match(comments[0].body, /static prompt/);
-  assert.doesNotMatch(comments[0].body, /tokenzero\.sh/);
+  // Only two hosts may ever appear: the public repo, and the gateway URL baked into the
+  // CLI (scripts/bake-default-url.sh refuses any host that does not prove our signing key).
+  for (const u of comments[0].body.match(/https?:\/\/[^\s)`>\]]+/g) ?? []) assert.match(u, /^(https:\/\/github\.com\/tokenzero-ai\/tokenzero|https:\/\/tokenzero\.sh(\/|$))/, u);
   assert.match(a.outputs, /^waste-pct=\d+$/m); assert.match(a.outputs, /^high=[1-9]/m);
   assert.match(a.summary, /TokenZero cost check/);
   const b = await act(dir, base);

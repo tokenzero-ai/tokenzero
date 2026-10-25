@@ -93,7 +93,10 @@ export function lex(src: string, path: string): Lexed {
       let j = i + 1;
       while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; else if (src[j] === '\n' && c !== '`') break; j++; }
       const end = Math.min(j, src.length);
-      literals.push({ text: src.slice(i + 1, end), line });
+      // Repetition builds big prompts from short literals: "..." * 200 (Python), '...'.repeat(200) (JS).
+      const rep = (py ? /^\s*\*\s*(\d{1,6})\b/ : /^\.repeat\(\s*(\d{1,6})\s*\)/).exec(src.slice(end + 1, end + 40));
+      const body = src.slice(i + 1, end);
+      literals.push({ text: rep ? body.repeat(Math.max(1, Math.min(Number(rep[1]), Math.floor(200_000 / Math.max(1, body.length))))) : body, line });
       blank(i + 1, end); advance(i, end + 1); i = end + 1; continue;
     }
     if (c === '\n') line++;
@@ -152,6 +155,80 @@ export function detectRepoKind(manifests: SourceFile[], files: SourceFile[]): { 
 const DOWN: Record<Finding['severity'], Finding['severity']> = { high: 'medium', medium: 'low', low: 'info', info: 'info' };
 
 // ---- analysis -----------------------------------------------------------------
+
+// ---- call attribution ---------------------------------------------------------
+// Which prompt text belongs to which call: the literals inside the call's own
+// argument list, plus the literals assigned to identifiers it references (two levels,
+// so `prompt = SYSTEM + x` resolves). Proximity alone is wrong: two calls a few lines
+// apart would each be blamed for the other's prompt.
+interface Scope { start: number; end: number }  // 0-based inclusive line range
+const OPEN = '([{', CLOSE = ')]}';
+
+/** From a masked offset at an opening bracket, the offset of its matching close (or the scan limit). */
+function matchClose(m: string, from: number, limit = 40_000): number {
+  let depth = 0;
+  for (let k = from; k < Math.min(m.length, from + limit); k++) {
+    const c = m[k];
+    if (OPEN.includes(c)) depth++;
+    else if (CLOSE.includes(c) && --depth === 0) return k;
+  }
+  return Math.min(m.length, from + limit) - 1;
+}
+
+function makeLocator(masked: string[]) {
+  const text = masked.join('\n');
+  const starts: number[] = []; let o = 0;
+  for (const l of masked) { starts.push(o); o += l.length + 1; }
+  const lineOf = (off: number) => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= off) lo = mid; else hi = mid - 1; } return lo; };
+  return { text, starts, lineOf };
+}
+
+const ASSIGN = (name: string) => new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var|final|static|private|public|readonly|\\s)*\\s*(?:self\\.|this\\.)?${name}\\s*(?::[^=\\n]+)?=(?![=>])`);
+const KEYWORDS = new Set(['self', 'this', 'await', 'async', 'return', 'model', 'messages', 'role', 'content', 'system', 'user', 'true', 'false', 'True', 'False', 'None', 'null', 'undefined', 'new', 'max_tokens', 'temperature', 'client', 'resp', 'response']);
+
+/** The statement assigned at `line`: from its `=` to the end of the balanced expression. */
+function assignmentScope(loc: ReturnType<typeof makeLocator>, masked: string[], line: number): Scope {
+  const eq = masked[line].search(/=(?![=>])/);
+  let end = line;
+  let k = loc.starts[line] + eq + 1;
+  for (;;) {
+    const lineEnd = loc.starts[end] + masked[end].length;
+    let opened = -1;
+    for (let q = k; q < lineEnd; q++) if (OPEN.includes(loc.text[q])) { opened = q; break; }
+    if (opened >= 0) { const close = matchClose(loc.text, opened, 20_000); end = loc.lineOf(close); k = close + 1; if (k < loc.starts[end] + masked[end].length) continue; }
+    const tail = masked[end].trimEnd();
+    if (end + 1 < masked.length && (/[+\\,(]$/.test(tail) || /^\s*[+.]/.test(masked[end + 1] ?? '')) && end - line < 60) { end++; k = loc.starts[end]; continue; }
+    return { start: line, end };
+  }
+}
+
+function identifiersIn(masked: string[], sc: Scope): Set<string> {
+  const ids = new Set<string>();
+  for (let l = sc.start; l <= sc.end; l++) for (const m of (masked[l] ?? '').matchAll(/\b([A-Za-z_]\w{1,60})\b/g)) if (!KEYWORDS.has(m[1])) ids.add(m[1]);
+  return ids;
+}
+
+/** Scopes of the nearest assignment to each identifier (preceding the use, else anywhere in the file). */
+function resolveScopes(loc: ReturnType<typeof makeLocator>, masked: string[], from: Scope, depth = 2): Scope[] {
+  const out: Scope[] = [], seen = new Set<string>();
+  let frontier = [from];
+  for (let d = 0; d < depth && frontier.length; d++) {
+    const next: Scope[] = [];
+    for (const sc of frontier) for (const id of identifiersIn(masked, sc)) {
+      if (seen.has(id)) continue; seen.add(id);
+      const re = ASSIGN(id);
+      let found = -1;
+      for (let l = sc.start; l >= 0; l--) if (re.test(masked[l])) { found = l; break; }
+      if (found < 0) for (let l = sc.end + 1; l < masked.length; l++) if (re.test(masked[l])) { found = l; break; }
+      if (found < 0 || (found >= from.start && found <= from.end)) continue;
+      const a = assignmentScope(loc, masked, found);
+      out.push(a); next.push(a);
+    }
+    frontier = next;
+  }
+  return out;
+}
+
 export function analyzeFiles(files: SourceFile[], repo: string | null = null, manifests: SourceFile[] = []): AuditReport {
   const findings: Finding[] = [];
   const callSites: CallSite[] = [];
@@ -182,9 +259,17 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
     const illustrative = EXAMPLE_PATH.test(f.path);
     let repeatFlagged = false;
 
+    const loc = makeLocator(masked);
+    const callLines: { line: number; sdk: string; scope: Scope }[] = [];
     masked.forEach((code, i) => {
-      const sdk = CALL_RE.find(([re]) => re.test(code))?.[1];
-      if (!sdk) return;
+      const hit = CALL_RE.find(([re]) => re.test(code));
+      if (!hit) return;
+      const m = hit[0].exec(code)!;
+      const close = matchClose(loc.text, loc.starts[i] + m.index + m[0].length - 1);
+      callLines.push({ line: i, sdk: hit[1], scope: { start: i, end: Math.max(i, loc.lineOf(close)) } });
+    });
+
+    callLines.forEach(({ line: i, sdk, scope }, n) => {
       const local: Finding[] = [];
       const push = (fd: Finding) => {
         let sev = fd.severity;
@@ -192,13 +277,25 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
         if (illustrative) sev = DOWN[sev];
         local.push({ ...fd, severity: sev });
       };
-      const window = lines.slice(i, Math.min(lines.length, i + 30)).join('\n');
-      const model = [...window.matchAll(MODEL_RE)].map(m => m[1])[0] ?? null;
+      // Prompt text and model attributed to THIS call (see "call attribution" above).
+      const refs = resolveScopes(loc, masked, scope);
+      const inScopes = (l: Literal, scs: Scope[]) => scs.some(sc => l.line - 1 >= sc.start && l.line - 1 <= sc.end);
+      let near = literals.filter(l => inScopes(l, [scope, ...refs]));
+      if (!near.some(l => l.text.trim().length > 20)) {
+        // Prompt built elsewhere (helper call, loader): fall back to text just above the
+        // call, never past the previous call or into the next one.
+        const prevEnd = n > 0 ? callLines[n - 1].scope.end : -1;
+        near = near.concat(literals.filter(l => l.line - 1 > prevEnd && l.line - 1 >= i - 40 && l.line - 1 < i));
+      }
+      const spanText = lines.slice(scope.start, scope.end + 1).join('\n');
+      const nextStart = n + 1 < callLines.length ? callLines[n + 1].line : lines.length;
+      const fallbackWindow = lines.slice(i, Math.min(nextStart, i + 30)).join('\n');
+      const modelFrom = (t: string) => [...t.matchAll(MODEL_RE)].map(m => m[1])[0] ?? null;
+      const model = modelFrom(spanText) ?? modelFrom(refs.map(r => lines.slice(r.start, r.end + 1).join('\n')).join('\n')) ?? modelFrom(fallbackWindow);
       callSites.push({ file: f.path, line: i + 1, model, sdk });
       if (model) models[model] = (models[model] ?? 0) + 1;
       const key = normalizeModel(model);
       const price = key ? priceFor(key) : null;
-      const near = literals.filter(l => l.line >= i + 1 - 40 && l.line <= i + 1 + 40);
       const prompts = near.filter(l => promptLike(l.text));
       const codeCtx = masked.slice(Math.max(0, i - 25), i + 25).join('\n');
       const simpleTask = near.some(l => SIMPLE_TASK.test(l.text));
@@ -212,10 +309,13 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
         const cacheable = bigTok >= min || (isAnthropic && bigTok >= 512);
         push({
           severity: isAnthropic ? (bigTok >= 1500 ? 'high' : cacheable ? 'medium' : 'low') : (cacheable ? 'medium' : 'low'), file: f.path, line: prompts[0].line,
-          title: `~${bigTok.toLocaleString()} static prompt tokens re-billed at full price on every call`,
-          detail: isAnthropic
+          title: isAnthropic
+            ? `~${bigTok.toLocaleString()} static prompt tokens re-billed at full price on every call`
+            : `~${bigTok.toLocaleString()} static prompt tokens sent on every call; only a stable prefix gets the cache discount`,
+          detail: (isAnthropic
             ? `This call sends a large fixed prompt but never marks a cache breakpoint, so Anthropic bills all ${bigTok} tokens at the full input rate each time instead of the cache-read rate (${readRate}% cheaper).`
-            : `A fixed prefix of ~${bigTok} tokens is sent on every call. Prefix caching applies only to stable prefixes of at least ${min} tokens on this model; keep the static part first and nothing volatile (timestamps, ids) interpolated into it.`,
+            : `A fixed block of ~${bigTok} tokens goes out with every call. ${model ? model : 'This provider'} discounts cached input ${readRate}%, but only for a byte-identical prefix of at least ${min} tokens that is routed to the same cache; anything volatile (dates, ids, user text) placed before or inside it, or traffic spread across cache shards, means paying full price.`)
+            + (prompts[0].line !== i + 1 ? ` Sent by the call at ${f.path}:${i + 1}.` : ''),
           fix: isAnthropic
             ? 'Route through TokenZero (breakpoints are injected automatically) or add `cache_control: {type: "ephemeral"}` to the last system block and the last tool.'
             : 'Route through TokenZero to get a stable `prompt_cache_key`, or move dynamic content below the static prefix and set `prompt_cache_key` yourself.',
@@ -226,13 +326,15 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       }
 
       // 2. Frontier model on a task whose prompt reads like extraction/classification.
-      if (key && price?.tier === 'frontier' && CASCADE_TARGET[key] && simpleTask) {
-        const to = CASCADE_TARGET[key];
+      const cascadeTo = key ? CASCADE_TARGET[key] : undefined;
+      const ratio = cascadeTo ? costOf(cascadeTo, { input: 1500, output: 200 })! / costOf(key!, { input: 1500, output: 200 })! : 1;
+      if (key && price && cascadeTo && simpleTask && (price.tier === 'frontier' || ratio <= 0.5)) {
+        const to = cascadeTo;
         const a = costOf(key, { input: 1500, output: 200 })!, b = costOf(to, { input: 1500, output: 200 })!;
         push({
-          severity: 'high', file: f.path, line: i + 1,
+          severity: price.tier === 'frontier' || ratio <= 0.2 ? 'high' : 'medium', file: f.path, line: i + 1,
           title: `${key} used for a task whose prompt reads like extraction/classification`,
-          detail: `Frontier pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
+          detail: `${price.tier === 'frontier' ? 'Frontier' : 'Full-size'} pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
           fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident, with parity reported in the ledger, or switch the model here behind an eval.`,
           est_savings_pct: Math.round((1 - b / a) * 100),
         });
@@ -253,10 +355,10 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       // 4. Repeat-prone task with no cache opt-in (once per file, informational).
       // Current reasoning models reject non-default temperature and Anthropic's
       // current API rejects sampling parameters, so temperature is never the advice.
-      if (simpleTask && !repeatFlagged && !/seed\s*[:=]|temperature\s*[:=]\s*0\b/.test(codeCtx)) {
+      if (simpleTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
         repeatFlagged = true;
         push({
-          severity: 'info', file: f.path, line: i + 1,
+          severity: 'low', file: f.path, line: i + 1,
           title: 'Repeat-prone task with no response-cache opt-in',
           detail: 'Classification and extraction calls often see identical inputs. Without a determinism signal no proxy can safely serve repeats from cache.',
           fix: 'If identical inputs should get identical answers, send `X-TokenZero-Cache: always` on these calls (or `temperature: 0` / a `seed` on models that still accept them). Repeats are then served in <10 ms at $0.',
@@ -265,7 +367,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       }
 
       // 5. Anthropic tools without a breakpoint.
-      if (isAnthropic && /\btools\s*[:=]/.test(masked.slice(i, i + 30).join('\n')) && !hasCacheControl) {
+      if (isAnthropic && /\btools\s*[:=]/.test(masked.slice(scope.start, scope.end + 1).join('\n')) && !hasCacheControl) {
         push({
           severity: 'low', file: f.path, line: i + 1,
           title: 'Tool definitions sent without a cache breakpoint',
@@ -364,12 +466,14 @@ const code = (t: string) => '`' + t.replace(/`/g, "'").replace(/\|/g, '\\|').rep
  * with `hostedReport`, a link to the stored report; without it the comment links only to
  * the public tools repo, never to a host we have not verified.
  */
+const usd2 = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 export function prComment(report: AuditReport, opts: { gatewayUrl?: string | null; hostedReport?: boolean } = {}): string {
   const c = report.cost_per_10k_runs;
   const head = c
-    ? `**TokenZero cost check:** estimated cost per 10k runs ${code('$' + c.before_usd)} → ${code('$' + c.after_usd)} (${report.estimated_waste_pct}% recoverable) on ${code(c.model)}`
+    ? `**TokenZero cost check:** estimated cost per 10k runs ${code(usd2(c.before_usd))} → ${code(usd2(c.after_usd))} (${report.estimated_waste_pct}% recoverable) on ${code(c.model)}`
     : `**TokenZero cost check:** ${report.findings.length} finding(s), ${report.call_sites.length} LLM call site(s)`;
-  const rows = report.findings.slice(0, 8).map(f => `| ${f.severity} | ${code(`${f.file}:${f.line}`)} | ${pipeSafe(f.title)} | ${f.est_savings_pct}% |`).join('\n');
+  const rows = report.findings.slice(0, 8).map(f => `| ${f.severity} | ${code(`${f.file}:${f.line}`)} | ${pipeSafe(f.title)} | ${f.severity === 'info' ? 'not counted' : f.est_savings_pct + '%'} |`).join('\n');
   const g = opts.gatewayUrl?.replace(/\/+$/, '');
   const fix = g
     ? `One-line fix for everything above: point your SDK at ${code(g + '/v1')} (BYOK; your keys pass straight through).${opts.hostedReport ? ` [Full report](${g}/audit/${report.id})` : ''}`
@@ -377,11 +481,11 @@ export function prComment(report: AuditReport, opts: { gatewayUrl?: string | nul
   return [
     PR_COMMENT_MARKER,
     head, '',
-    report.findings.length ? '| severity | where | finding | est. savings |\n|---|---|---|---|\n' + rows : '_No token-waste patterns found in the changed lines._',
+    report.findings.length ? '| severity | where | finding | savings on that call |\n|---|---|---|---|\n' + rows : '_No token-waste patterns found in the changed lines._',
     '', report.findings.slice(0, 3).map(f => `<details><summary>${f.title}</summary>\n\n${f.detail}\n\n**Fix:** ${f.fix}\n</details>`).join('\n'),
     '', fix,
     ...report.notes.map(n => `> ${inert(n)}`),
-    '', '<sub>Static heuristics at list prices, not measurements. Verified numbers come from the signed ledger once traffic flows.</sub>',
+    '', '<sub>Static heuristics at list prices, not measurements. Each row is the saving on the call it points at; the headline weights rows by confidence and averages over every call site in the change. Verified numbers come from the signed ledger once traffic flows.</sub>',
   ].join('\n');
 }
 

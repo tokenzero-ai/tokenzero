@@ -202,7 +202,9 @@ function lex(src, path3) {
         j++;
       }
       const end = Math.min(j, src.length);
-      literals.push({ text: src.slice(i + 1, end), line });
+      const rep = (py ? /^\s*\*\s*(\d{1,6})\b/ : /^\.repeat\(\s*(\d{1,6})\s*\)/).exec(src.slice(end + 1, end + 40));
+      const body = src.slice(i + 1, end);
+      literals.push({ text: rep ? body.repeat(Math.max(1, Math.min(Number(rep[1]), Math.floor(2e5 / Math.max(1, body.length))))) : body, line });
       blank(i + 1, end);
       advance(i, end + 1);
       i = end + 1;
@@ -253,6 +255,98 @@ function detectRepoKind(manifests2, files) {
   return { kind: "unknown", reason: "no manifest signal" };
 }
 var DOWN = { high: "medium", medium: "low", low: "info", info: "info" };
+var OPEN = "([{";
+var CLOSE = ")]}";
+function matchClose(m, from, limit = 4e4) {
+  let depth = 0;
+  for (let k = from; k < Math.min(m.length, from + limit); k++) {
+    const c = m[k];
+    if (OPEN.includes(c)) depth++;
+    else if (CLOSE.includes(c) && --depth === 0) return k;
+  }
+  return Math.min(m.length, from + limit) - 1;
+}
+function makeLocator(masked) {
+  const text = masked.join("\n");
+  const starts = [];
+  let o = 0;
+  for (const l of masked) {
+    starts.push(o);
+    o += l.length + 1;
+  }
+  const lineOf = (off) => {
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = lo + hi + 1 >> 1;
+      if (starts[mid] <= off) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  return { text, starts, lineOf };
+}
+var ASSIGN = (name) => new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var|final|static|private|public|readonly|\\s)*\\s*(?:self\\.|this\\.)?${name}\\s*(?::[^=\\n]+)?=(?![=>])`);
+var KEYWORDS = /* @__PURE__ */ new Set(["self", "this", "await", "async", "return", "model", "messages", "role", "content", "system", "user", "true", "false", "True", "False", "None", "null", "undefined", "new", "max_tokens", "temperature", "client", "resp", "response"]);
+function assignmentScope(loc, masked, line) {
+  const eq = masked[line].search(/=(?![=>])/);
+  let end = line;
+  let k = loc.starts[line] + eq + 1;
+  for (; ; ) {
+    const lineEnd = loc.starts[end] + masked[end].length;
+    let opened = -1;
+    for (let q = k; q < lineEnd; q++) if (OPEN.includes(loc.text[q])) {
+      opened = q;
+      break;
+    }
+    if (opened >= 0) {
+      const close = matchClose(loc.text, opened, 2e4);
+      end = loc.lineOf(close);
+      k = close + 1;
+      if (k < loc.starts[end] + masked[end].length) continue;
+    }
+    const tail = masked[end].trimEnd();
+    if (end + 1 < masked.length && (/[+\\,(]$/.test(tail) || /^\s*[+.]/.test(masked[end + 1] ?? "")) && end - line < 60) {
+      end++;
+      k = loc.starts[end];
+      continue;
+    }
+    return { start: line, end };
+  }
+}
+function identifiersIn(masked, sc) {
+  const ids = /* @__PURE__ */ new Set();
+  for (let l = sc.start; l <= sc.end; l++) for (const m of (masked[l] ?? "").matchAll(/\b([A-Za-z_]\w{1,60})\b/g)) if (!KEYWORDS.has(m[1])) ids.add(m[1]);
+  return ids;
+}
+function resolveScopes(loc, masked, from, depth = 2) {
+  const out = [], seen = /* @__PURE__ */ new Set();
+  let frontier = [from];
+  for (let d = 0; d < depth && frontier.length; d++) {
+    const next = [];
+    for (const sc of frontier) for (const id of identifiersIn(masked, sc)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const re = ASSIGN(id);
+      let found = -1;
+      for (let l = sc.start; l >= 0; l--) if (re.test(masked[l])) {
+        found = l;
+        break;
+      }
+      if (found < 0) {
+        for (let l = sc.end + 1; l < masked.length; l++) if (re.test(masked[l])) {
+          found = l;
+          break;
+        }
+      }
+      if (found < 0 || found >= from.start && found <= from.end) continue;
+      const a = assignmentScope(loc, masked, found);
+      out.push(a);
+      next.push(a);
+    }
+    frontier = next;
+  }
+  return out;
+}
 function analyzeFiles(files, repo = null, manifests2 = []) {
   const findings = [];
   const callSites = [];
@@ -280,9 +374,16 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
     const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(src);
     const illustrative = EXAMPLE_PATH.test(f.path);
     let repeatFlagged = false;
+    const loc = makeLocator(masked);
+    const callLines = [];
     masked.forEach((code, i) => {
-      const sdk = CALL_RE.find(([re]) => re.test(code))?.[1];
-      if (!sdk) return;
+      const hit = CALL_RE.find(([re]) => re.test(code));
+      if (!hit) return;
+      const m = hit[0].exec(code);
+      const close = matchClose(loc.text, loc.starts[i] + m.index + m[0].length - 1);
+      callLines.push({ line: i, sdk: hit[1], scope: { start: i, end: Math.max(i, loc.lineOf(close)) } });
+    });
+    callLines.forEach(({ line: i, sdk, scope }, n) => {
       const local = [];
       const push = (fd) => {
         let sev = fd.severity;
@@ -290,13 +391,22 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
         if (illustrative) sev = DOWN[sev];
         local.push({ ...fd, severity: sev });
       };
-      const window = lines.slice(i, Math.min(lines.length, i + 30)).join("\n");
-      const model = [...window.matchAll(MODEL_RE)].map((m) => m[1])[0] ?? null;
+      const refs = resolveScopes(loc, masked, scope);
+      const inScopes = (l, scs) => scs.some((sc) => l.line - 1 >= sc.start && l.line - 1 <= sc.end);
+      let near = literals.filter((l) => inScopes(l, [scope, ...refs]));
+      if (!near.some((l) => l.text.trim().length > 20)) {
+        const prevEnd = n > 0 ? callLines[n - 1].scope.end : -1;
+        near = near.concat(literals.filter((l) => l.line - 1 > prevEnd && l.line - 1 >= i - 40 && l.line - 1 < i));
+      }
+      const spanText = lines.slice(scope.start, scope.end + 1).join("\n");
+      const nextStart = n + 1 < callLines.length ? callLines[n + 1].line : lines.length;
+      const fallbackWindow = lines.slice(i, Math.min(nextStart, i + 30)).join("\n");
+      const modelFrom = (t) => [...t.matchAll(MODEL_RE)].map((m) => m[1])[0] ?? null;
+      const model = modelFrom(spanText) ?? modelFrom(refs.map((r) => lines.slice(r.start, r.end + 1).join("\n")).join("\n")) ?? modelFrom(fallbackWindow);
       callSites.push({ file: f.path, line: i + 1, model, sdk });
       if (model) models[model] = (models[model] ?? 0) + 1;
       const key = normalizeModel(model);
       const price = key ? priceFor(key) : null;
-      const near = literals.filter((l) => l.line >= i + 1 - 40 && l.line <= i + 1 + 40);
       const prompts = near.filter((l) => promptLike(l.text));
       const codeCtx = masked.slice(Math.max(0, i - 25), i + 25).join("\n");
       const simpleTask = near.some((l) => SIMPLE_TASK.test(l.text));
@@ -310,23 +420,25 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           severity: isAnthropic ? bigTok >= 1500 ? "high" : cacheable ? "medium" : "low" : cacheable ? "medium" : "low",
           file: f.path,
           line: prompts[0].line,
-          title: `~${bigTok.toLocaleString()} static prompt tokens re-billed at full price on every call`,
-          detail: isAnthropic ? `This call sends a large fixed prompt but never marks a cache breakpoint, so Anthropic bills all ${bigTok} tokens at the full input rate each time instead of the cache-read rate (${readRate}% cheaper).` : `A fixed prefix of ~${bigTok} tokens is sent on every call. Prefix caching applies only to stable prefixes of at least ${min} tokens on this model; keep the static part first and nothing volatile (timestamps, ids) interpolated into it.`,
+          title: isAnthropic ? `~${bigTok.toLocaleString()} static prompt tokens re-billed at full price on every call` : `~${bigTok.toLocaleString()} static prompt tokens sent on every call; only a stable prefix gets the cache discount`,
+          detail: (isAnthropic ? `This call sends a large fixed prompt but never marks a cache breakpoint, so Anthropic bills all ${bigTok} tokens at the full input rate each time instead of the cache-read rate (${readRate}% cheaper).` : `A fixed block of ~${bigTok} tokens goes out with every call. ${model ? model : "This provider"} discounts cached input ${readRate}%, but only for a byte-identical prefix of at least ${min} tokens that is routed to the same cache; anything volatile (dates, ids, user text) placed before or inside it, or traffic spread across cache shards, means paying full price.`) + (prompts[0].line !== i + 1 ? ` Sent by the call at ${f.path}:${i + 1}.` : ""),
           fix: isAnthropic ? 'Route through TokenZero (breakpoints are injected automatically) or add `cache_control: {type: "ephemeral"}` to the last system block and the last tool.' : "Route through TokenZero to get a stable `prompt_cache_key`, or move dynamic content below the static prefix and set `prompt_cache_key` yourself.",
           // OpenAI/Gemini already cache stable prefixes automatically; the recoverable part
           // is prefix hygiene and cache routing, not the whole cache discount.
           est_savings_pct: !cacheable ? 0 : isAnthropic ? Math.min(85, Math.round(bigTok / (bigTok + 400) * readRate)) : 15
         });
       }
-      if (key && price?.tier === "frontier" && CASCADE_TARGET[key] && simpleTask) {
-        const to = CASCADE_TARGET[key];
+      const cascadeTo = key ? CASCADE_TARGET[key] : void 0;
+      const ratio = cascadeTo ? costOf(cascadeTo, { input: 1500, output: 200 }) / costOf(key, { input: 1500, output: 200 }) : 1;
+      if (key && price && cascadeTo && simpleTask && (price.tier === "frontier" || ratio <= 0.5)) {
+        const to = cascadeTo;
         const a = costOf(key, { input: 1500, output: 200 }), b = costOf(to, { input: 1500, output: 200 });
         push({
-          severity: "high",
+          severity: price.tier === "frontier" || ratio <= 0.2 ? "high" : "medium",
           file: f.path,
           line: i + 1,
           title: `${key} used for a task whose prompt reads like extraction/classification`,
-          detail: `Frontier pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
+          detail: `${price.tier === "frontier" ? "Frontier" : "Full-size"} pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
           fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident, with parity reported in the ledger, or switch the model here behind an eval.`,
           est_savings_pct: Math.round((1 - b / a) * 100)
         });
@@ -343,10 +455,10 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           est_savings_pct: 25
         });
       }
-      if (simpleTask && !repeatFlagged && !/seed\s*[:=]|temperature\s*[:=]\s*0\b/.test(codeCtx)) {
+      if (simpleTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
         repeatFlagged = true;
         push({
-          severity: "info",
+          severity: "low",
           file: f.path,
           line: i + 1,
           title: "Repeat-prone task with no response-cache opt-in",
@@ -355,7 +467,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           est_savings_pct: 10
         });
       }
-      if (isAnthropic && /\btools\s*[:=]/.test(masked.slice(i, i + 30).join("\n")) && !hasCacheControl) {
+      if (isAnthropic && /\btools\s*[:=]/.test(masked.slice(scope.start, scope.end + 1).join("\n")) && !hasCacheControl) {
         push({
           severity: "low",
           file: f.path,
@@ -528,8 +640,8 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.1.2";
-var BAKED_URL = typeof __TOKENZERO_BAKED__ === "string" ? __TOKENZERO_BAKED__ : "__TOKENZERO_DEFAULT_URL__";
+var VERSION = "0.1.3";
+var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = ["2025-11-25", "2025-06-18", "2025-03-26"];
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");
 var TOOLS = [
@@ -566,7 +678,9 @@ async function callTool(name, args) {
     case "optimize_prompt_payload": {
       const base = serviceUrl();
       if (!base) throw new Error("set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)");
-      const r = await fetch(base + "/mcp", { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
+      const r = await fetch(base + "/mcp", { method: "POST", redirect: "manual", signal: AbortSignal.timeout(2e4), headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) }).catch((e) => {
+        throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`);
+      });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
       const j = await r.json();
       if (j.error) throw new Error(j.error.message);

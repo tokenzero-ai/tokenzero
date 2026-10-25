@@ -11,6 +11,7 @@ await build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   outfile,
   bundle: true,
+  define: { '__TOKENZERO_BAKED__': "\"https://tokenzero.sh\"" },
   platform: 'node',
   format: 'esm',
   target: 'node18',

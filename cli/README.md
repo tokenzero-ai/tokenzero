@@ -13,7 +13,7 @@ Audits are **static heuristics**: they read code, not traffic, and report estima
 
 ## Connecting to the gateway
 
-These commands need a gateway URL (`--url` or `TOKENZERO_URL`).
+These commands talk to the hosted gateway at `https://tokenzero.sh`. To use another deployment, pass `--url` or set `TOKENZERO_URL`.
 
 ```sh
 npx -y @tokenzero/cli init        # audit, create a workspace, write base URLs to .env (asks first)

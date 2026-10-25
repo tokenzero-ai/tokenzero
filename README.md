@@ -56,7 +56,7 @@ claude mcp add tokenzero -- npx -y @tokenzero/mcp          # Claude Code
 { "mcpServers": { "tokenzero": { "command": "npx", "args": ["-y", "@tokenzero/mcp"] } } }
 ```
 
-`audit_repo_token_waste` and `calculate_model_arbitrage` run entirely on your machine. `optimize_prompt_payload` sends the request body you give it to the TokenZero service (set `TOKENZERO_URL`), so do not put secrets in it.
+`audit_repo_token_waste` and `calculate_model_arbitrage` run entirely on your machine. `optimize_prompt_payload` sends the request body you give it to the TokenZero service (`https://tokenzero.sh` unless `TOKENZERO_URL` is set), so do not put secrets in it.
 
 ## Connect a project to the gateway
 
