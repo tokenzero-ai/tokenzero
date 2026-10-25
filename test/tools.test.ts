@@ -38,5 +38,5 @@ test('bundle: committed CLI matches sources and runs', async () => {
   const h = (f: string) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
   assert.equal(h(tmp), h('cli/bin/tokenzero.mjs'), 'run `npm run build` and commit cli/bin/tokenzero.mjs');
   const v = await run(process.execPath, ['cli/bin/tokenzero.mjs', 'version']);
-  assert.equal(v.stdout.trim(), '0.1.0');
+  assert.equal(v.stdout.trim(), JSON.parse(fs.readFileSync('cli/package.json', 'utf8')).version, 'CLI VERSION constant matches cli/package.json');
 });

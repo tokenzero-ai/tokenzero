@@ -1,13 +1,30 @@
 {
   "name": "@tokenzero/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TokenZero CLI: connect a project to the TokenZero BYOK gateway, audit LLM token waste locally, check usage and verify signed savings receipts.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "TokenZero Contributors <support@tokenzero.sh>",
   "homepage": "https://tokenzero.sh",
-  "bin": { "tokenzero": "bin/tokenzero.mjs" },
-  "files": ["bin/tokenzero.mjs"],
-  "engines": { "node": ">=18" },
-  "keywords": ["llm", "openai", "anthropic", "gemini", "cost", "finops", "prompt-caching", "mcp"]
+  "bin": {
+    "tokenzero": "bin/tokenzero.mjs"
+  },
+  "files": [
+    "bin/tokenzero.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "cost",
+    "finops",
+    "prompt-caching",
+    "mcp"
+  ]
 }

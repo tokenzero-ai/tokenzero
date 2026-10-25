@@ -46,6 +46,7 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
   ], dir);
   const by = (id: number) => res.find(r => r.id === id);
   assert.equal(by(1).result.protocolVersion, '2025-06-18');
+  assert.equal(by(1).result.serverInfo.version, JSON.parse(fs.readFileSync('mcp/package.json', 'utf8')).version, 'MCP version matches mcp/package.json');
   assert.deepEqual(by(2).result.tools.map((t: any) => t.name), ['audit_repo_token_waste', 'calculate_model_arbitrage', 'optimize_prompt_payload']);
   const audit = by(3).result.structuredContent;
   assert.equal(audit.repo_kind, 'app');

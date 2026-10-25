@@ -501,7 +501,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var BAKED_URL = typeof __TOKENZERO_BAKED__ === "string" ? __TOKENZERO_BAKED__ : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };

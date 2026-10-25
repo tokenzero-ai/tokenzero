@@ -1,13 +1,30 @@
 {
   "name": "@tokenzero/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TokenZero MCP server (stdio): audit LLM token waste in your project locally, price model alternatives, and make prompts cache-friendly from Claude Code, Cursor, Windsurf or Cline.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "TokenZero Contributors <support@tokenzero.sh>",
   "homepage": "https://tokenzero.sh",
-  "bin": { "tokenzero-mcp": "bin/tokenzero-mcp.mjs" },
-  "files": ["bin/tokenzero-mcp.mjs"],
-  "engines": { "node": ">=18" },
-  "keywords": ["mcp", "model-context-protocol", "llm", "cost", "finops", "prompt-caching", "claude-code", "cursor"]
+  "bin": {
+    "tokenzero-mcp": "bin/tokenzero-mcp.mjs"
+  },
+  "files": [
+    "bin/tokenzero-mcp.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "cost",
+    "finops",
+    "prompt-caching",
+    "claude-code",
+    "cursor"
+  ]
 }
