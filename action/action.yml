@@ -1,0 +1,40 @@
+name: TokenZero cost check
+description: Static LLM token-waste audit of a pull request's changes, posted as one updatable PR comment. Runs locally on the runner; no account or API key.
+author: TokenZero Contributors
+branding:
+  icon: trending-down
+  color: green
+inputs:
+  github-token:
+    description: Token used to post the PR comment. Needs pull-requests write; read-only tokens (fork PRs) fall back to the job summary.
+    default: ${{ github.token }}
+  fail-over:
+    description: Fail the check when estimated recoverable waste exceeds this percentage (empty = never fail).
+    default: ''
+  comment-on-clean:
+    description: Also post a comment when the changes have no findings.
+    default: 'false'
+  path:
+    description: Directory to audit on non-pull-request events.
+    default: '.'
+outputs:
+  waste-pct:
+    description: Estimated recoverable waste, percent.
+    value: ${{ steps.run.outputs.waste-pct }}
+  findings:
+    description: Number of findings.
+    value: ${{ steps.run.outputs.findings }}
+  high:
+    description: Number of high-severity findings.
+    value: ${{ steps.run.outputs.high }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/run.mjs"
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_FAIL_OVER: ${{ inputs.fail-over }}
+        INPUT_COMMENT_ON_CLEAN: ${{ inputs.comment-on-clean }}
+        INPUT_PATH: ${{ inputs.path }}

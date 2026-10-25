@@ -28,6 +28,24 @@ What it looks for:
 
 Library and SDK repositories are detected and their findings downgraded, since their call sites pass through whatever the caller chooses.
 
+## Check every pull request (GitHub Action)
+
+```yaml
+# .github/workflows/tokenzero.yml
+name: TokenZero cost check
+on: pull_request
+permissions: { contents: read, pull-requests: write }
+jobs:
+  cost-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: tokenzero-ai/tokenzero/action@v0
+```
+
+One comment per PR, updated on every push; nothing leaves the runner. See [action/README.md](action/README.md) for inputs and outputs.
+
 ## Use it from a coding agent (MCP)
 
 ```sh

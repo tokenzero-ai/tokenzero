@@ -528,7 +528,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.1.1";
+var VERSION = "0.1.2";
 var BAKED_URL = typeof __TOKENZERO_BAKED__ === "string" ? __TOKENZERO_BAKED__ : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = ["2025-11-25", "2025-06-18", "2025-03-26"];
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");

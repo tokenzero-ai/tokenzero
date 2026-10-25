@@ -14,7 +14,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -237,7 +237,7 @@ async function cmdAudit(a: Args) {
 
   const fmt = (a.flags.format as string) ?? (a.flags.json ? 'json' : 'text');
   if (fmt === 'json') out(JSON.stringify(report, null, 2));
-  else if (fmt === 'markdown') out(prComment(report, baseUrl(a) ?? 'https://tokenzero.sh'));
+  else if (fmt === 'markdown') out(prComment(report, { gatewayUrl: baseUrl(a) }));
   else {
     summarize(report, 100);
     for (const f of report.findings.slice(0, 3)) out(`\n${bold(f.title)}\n  ${f.detail}\n  ${green('fix:')} ${f.fix}`);

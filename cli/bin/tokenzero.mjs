@@ -281,8 +281,8 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
     const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(src);
     const illustrative = EXAMPLE_PATH.test(f.path);
     let repeatFlagged = false;
-    masked.forEach((code, i) => {
-      const sdk = CALL_RE.find(([re]) => re.test(code))?.[1];
+    masked.forEach((code2, i) => {
+      const sdk = CALL_RE.find(([re]) => re.test(code2))?.[1];
       if (!sdk) return;
       const local = [];
       const push = (fd) => {
@@ -428,11 +428,19 @@ function filesFromDiff(diff) {
   }
   return files;
 }
-function prComment(report, publicUrl) {
+var PR_COMMENT_MARKER = "<!-- tokenzero-cost-check -->";
+var PUBLIC_REPO = "https://github.com/tokenzero-ai/tokenzero";
+var inert = (t) => t.replace(/[\\`*_[\]<>|]/g, (c2) => "\\" + c2).replace(/\r?\n/g, " ");
+var pipeSafe = (t) => t.replace(/\|/g, "\\|");
+var code = (t) => "`" + t.replace(/`/g, "'").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").slice(0, 200) + "`";
+function prComment(report, opts = {}) {
   const c2 = report.cost_per_10k_runs;
-  const head = c2 ? `**TokenZero FinOps check** \u2014 estimated cost per 10k runs: \`$${c2.before_usd}\` \u2192 \`$${c2.after_usd}\` (${report.estimated_waste_pct}% recoverable) on \`${c2.model}\`` : `**TokenZero FinOps check** \u2014 ${report.findings.length} finding(s), ${report.call_sites.length} LLM call site(s)`;
-  const rows = report.findings.slice(0, 8).map((f) => `| ${f.severity} | \`${f.file}:${f.line}\` | ${f.title} | ${f.est_savings_pct}% |`).join("\n");
+  const head = c2 ? `**TokenZero cost check:** estimated cost per 10k runs ${code("$" + c2.before_usd)} \u2192 ${code("$" + c2.after_usd)} (${report.estimated_waste_pct}% recoverable) on ${code(c2.model)}` : `**TokenZero cost check:** ${report.findings.length} finding(s), ${report.call_sites.length} LLM call site(s)`;
+  const rows = report.findings.slice(0, 8).map((f) => `| ${f.severity} | ${code(`${f.file}:${f.line}`)} | ${pipeSafe(f.title)} | ${f.est_savings_pct}% |`).join("\n");
+  const g = opts.gatewayUrl?.replace(/\/+$/, "");
+  const fix = g ? `One-line fix for everything above: point your SDK at ${code(g + "/v1")} (BYOK; your keys pass straight through).${opts.hostedReport ? ` [Full report](${g}/audit/${report.id})` : ""}` : `How to fix: route calls through the TokenZero gateway, or apply the fixes above by hand. [TokenZero tools](${PUBLIC_REPO})`;
   return [
+    PR_COMMENT_MARKER,
     head,
     "",
     report.findings.length ? "| severity | where | finding | est. savings |\n|---|---|---|---|\n" + rows : "_No token-waste patterns found in the changed lines._",
@@ -444,10 +452,10 @@ ${f.detail}
 **Fix:** ${f.fix}
 </details>`).join("\n"),
     "",
-    `One-line fix for everything above: point your SDK at \`${publicUrl}/v1\` (BYOK; your keys pass straight through). [How it works](${publicUrl}) \xB7 [Full report](${publicUrl}/audit/${report.id})`,
-    ...report.notes.map((n) => `> ${n}`),
+    fix,
+    ...report.notes.map((n) => `> ${inert(n)}`),
     "",
-    "<sub>Estimates are static heuristics at list prices, not measurements. Verified numbers come from the signed ledger once traffic flows.</sub>"
+    "<sub>Static heuristics at list prices, not measurements. Verified numbers come from the signed ledger once traffic flows.</sub>"
   ].join("\n");
 }
 
@@ -501,7 +509,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.1";
+var VERSION = "0.1.2";
 var BAKED_URL = typeof __TOKENZERO_BAKED__ === "string" ? __TOKENZERO_BAKED__ : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -523,7 +531,7 @@ function parseArgs(argv) {
 }
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["url", "name", "key", "format", "diff", "fail-over", "env-file"]);
 var tty = process.stdout.isTTY && !process.env.NO_COLOR;
-var c = (code) => (s) => tty ? `\x1B[${code}m${s}\x1B[0m` : s;
+var c = (code2) => (s) => tty ? `\x1B[${code2}m${s}\x1B[0m` : s;
 var bold = c("1");
 var dim = c("2");
 var green = c("32");
@@ -753,7 +761,7 @@ async function cmdAudit(a) {
   } else report = analyzeFiles(walk(root), null, manifests(root));
   const fmt = a.flags.format ?? (a.flags.json ? "json" : "text");
   if (fmt === "json") out(JSON.stringify(report, null, 2));
-  else if (fmt === "markdown") out(prComment(report, baseUrl(a) ?? "https://tokenzero.sh"));
+  else if (fmt === "markdown") out(prComment(report, { gatewayUrl: baseUrl(a) }));
   else {
     summarize(report, 100);
     for (const f of report.findings.slice(0, 3)) out(`

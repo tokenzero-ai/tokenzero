@@ -346,19 +346,42 @@ export function filesFromDiff(diff: string): SourceFile[] {
   return files;
 }
 
-export function prComment(report: AuditReport, publicUrl: string): string {
+export const PR_COMMENT_MARKER = '<!-- tokenzero-cost-check -->';
+const PUBLIC_REPO = 'https://github.com/tokenzero-ai/tokenzero';
+
+/**
+ * Make repo-controlled text inert in markdown. Only file paths (rendered as code spans
+ * via `code`) and manifest-derived notes come from the audited repo; our own titles,
+ * details and fixes interpolate nothing but model ids matched by [\w.-]+.
+ */
+const inert = (t: string) => t.replace(/[\\`*_[\]<>|]/g, c => '\\' + c).replace(/\r?\n/g, ' ');
+const pipeSafe = (t: string) => t.replace(/\|/g, '\\|');
+// GFM splits table cells on '|' even inside code spans, so it must be escaped there too.
+const code = (t: string) => '`' + t.replace(/`/g, "'").replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').slice(0, 200) + '`';
+
+/**
+ * Markdown for a PR comment. `gatewayUrl` (a gateway we run) adds the one-line fix and,
+ * with `hostedReport`, a link to the stored report; without it the comment links only to
+ * the public tools repo, never to a host we have not verified.
+ */
+export function prComment(report: AuditReport, opts: { gatewayUrl?: string | null; hostedReport?: boolean } = {}): string {
   const c = report.cost_per_10k_runs;
   const head = c
-    ? `**TokenZero FinOps check** — estimated cost per 10k runs: \`$${c.before_usd}\` → \`$${c.after_usd}\` (${report.estimated_waste_pct}% recoverable) on \`${c.model}\``
-    : `**TokenZero FinOps check** — ${report.findings.length} finding(s), ${report.call_sites.length} LLM call site(s)`;
-  const rows = report.findings.slice(0, 8).map(f => `| ${f.severity} | \`${f.file}:${f.line}\` | ${f.title} | ${f.est_savings_pct}% |`).join('\n');
+    ? `**TokenZero cost check:** estimated cost per 10k runs ${code('$' + c.before_usd)} → ${code('$' + c.after_usd)} (${report.estimated_waste_pct}% recoverable) on ${code(c.model)}`
+    : `**TokenZero cost check:** ${report.findings.length} finding(s), ${report.call_sites.length} LLM call site(s)`;
+  const rows = report.findings.slice(0, 8).map(f => `| ${f.severity} | ${code(`${f.file}:${f.line}`)} | ${pipeSafe(f.title)} | ${f.est_savings_pct}% |`).join('\n');
+  const g = opts.gatewayUrl?.replace(/\/+$/, '');
+  const fix = g
+    ? `One-line fix for everything above: point your SDK at ${code(g + '/v1')} (BYOK; your keys pass straight through).${opts.hostedReport ? ` [Full report](${g}/audit/${report.id})` : ''}`
+    : `How to fix: route calls through the TokenZero gateway, or apply the fixes above by hand. [TokenZero tools](${PUBLIC_REPO})`;
   return [
+    PR_COMMENT_MARKER,
     head, '',
     report.findings.length ? '| severity | where | finding | est. savings |\n|---|---|---|---|\n' + rows : '_No token-waste patterns found in the changed lines._',
     '', report.findings.slice(0, 3).map(f => `<details><summary>${f.title}</summary>\n\n${f.detail}\n\n**Fix:** ${f.fix}\n</details>`).join('\n'),
-    '', `One-line fix for everything above: point your SDK at \`${publicUrl}/v1\` (BYOK; your keys pass straight through). [How it works](${publicUrl}) · [Full report](${publicUrl}/audit/${report.id})`,
-    ...report.notes.map(n => `> ${n}`),
-    '', '<sub>Estimates are static heuristics at list prices, not measurements. Verified numbers come from the signed ledger once traffic flows.</sub>',
+    '', fix,
+    ...report.notes.map(n => `> ${inert(n)}`),
+    '', '<sub>Static heuristics at list prices, not measurements. Verified numbers come from the signed ledger once traffic flows.</sub>',
   ].join('\n');
 }
 

@@ -15,7 +15,7 @@ import { modelArbitrage } from '../../src/arbitrage.ts';
 import { PRICING_VERSION } from '../../src/pricing.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
