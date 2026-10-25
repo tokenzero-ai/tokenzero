@@ -14,7 +14,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our

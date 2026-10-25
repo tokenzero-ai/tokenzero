@@ -174,7 +174,7 @@ export interface Usage {
 }
 
 /** Actual cost in USD for a usage breakdown at list price. Null when the model is unpriced. */
-export function costOf(model: unknown, u: Usage): number | null {
+export function costOf(model: unknown, u: Usage, factor = 1): number | null {
   const p = priceFor(model);
   if (!p) return null;
   const tier = p.longCtx && p.longCtxAt && u.input > p.longCtxAt ? { ...p, ...p.longCtx } : p;
@@ -182,7 +182,7 @@ export function costOf(model: unknown, u: Usage): number | null {
   const written = u.cacheWrite ?? 0;
   const fresh = Math.max(0, u.input - cached - written);
   const M = 1e6;
-  return (
+  return factor * (
     fresh * tier.input / M +
     cached * (tier.cachedInput ?? tier.input) / M +
     written * (tier.cacheWrite ?? tier.input) / M +

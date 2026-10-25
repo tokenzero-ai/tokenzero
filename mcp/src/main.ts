@@ -15,12 +15,12 @@ import { modelArbitrage } from '../../src/arbitrage.ts';
 import { PRICING_VERSION } from '../../src/pricing.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
 const BAKED_URL = typeof __TOKENZERO_BAKED__ === 'string' ? __TOKENZERO_BAKED__ : '__TOKENZERO_DEFAULT_URL__';
-const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26'];
+const SUPPORTED = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'];
 const serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith('http') ? BAKED_URL : '')).replace(/\/+$/, '');
 
 const TOOLS = [
@@ -81,6 +81,16 @@ async function handle(m: any) {
         const want = m.params?.protocolVersion;
         return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'tokenzero', version: VERSION }, instructions: 'Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.' });
       }
+      case 'server/discover':
+        return reply({
+          resultType: 'complete',
+          supportedVersions: ['2026-07-28'],
+          capabilities: { tools: { listChanged: false } },
+          instructions: 'Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.',
+          ttlMs: 3_600_000,
+          cacheScope: 'public',
+          _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'tokenzero', version: VERSION } },
+        });
       case 'ping': return reply({});
       case 'tools/list': return reply({ tools: TOOLS });
       case 'tools/call':

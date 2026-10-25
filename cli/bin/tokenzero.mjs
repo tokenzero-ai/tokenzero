@@ -118,7 +118,7 @@ function priceFor(model) {
   const key = normalizeModel(model);
   return key ? { key, ...PRICES[key] } : null;
 }
-function costOf(model, u) {
+function costOf(model, u, factor = 1) {
   const p = priceFor(model);
   if (!p) return null;
   const tier = p.longCtx && p.longCtxAt && u.input > p.longCtxAt ? { ...p, ...p.longCtx } : p;
@@ -126,7 +126,7 @@ function costOf(model, u) {
   const written = u.cacheWrite ?? 0;
   const fresh = Math.max(0, u.input - cached - written);
   const M = 1e6;
-  return fresh * tier.input / M + cached * (tier.cachedInput ?? tier.input) / M + written * (tier.cacheWrite ?? tier.input) / M + u.output * tier.output / M;
+  return factor * (fresh * tier.input / M + cached * (tier.cachedInput ?? tier.input) / M + written * (tier.cacheWrite ?? tier.input) / M + u.output * tier.output / M);
 }
 
 // cli/src/tokens-lite.ts
@@ -224,6 +224,7 @@ function promptLike(t) {
   const words = (t.match(/[A-Za-z]{2,}/g) ?? []).length;
   return tags < 4 && cssRules < 3 && codeChars / t.length < 0.03 && words / (t.length / 6) > 0.5;
 }
+var REPEAT_TASK = /\b(classify|classification|categori[sz]e|sentiment|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 var SIMPLE_TASK = /\b(classify|classification|categori[sz]e|sentiment|extract (the|all|every|any)|return (only |just )?(valid |a )?json|respond (only )?(with|in) (valid )?json|output (only )?(valid )?json|translate (this|the following|into)|summari[sz]e (this|the following|in \d+)|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 var LLM_LIB_EXACT = /* @__PURE__ */ new Set(["openai", "anthropic", "@anthropic-ai/sdk", "ai", "litellm", "openai-agents", "@openai/agents", "instructor", "dspy", "dspy-ai", "guidance", "semantic-kernel", "haystack-ai", "autogen", "pyautogen", "autogen-agentchat", "crewai", "google-genai", "@google/genai", "mistralai", "@mistralai/mistralai", "cohere", "cohere-ai", "llama-index", "llama_index", "llamaindex", "langchain", "langgraph", "@langchain/core", "groq-sdk", "together-ai", "ollama"]);
 var LLM_LIB_FAMILY = /^(@langchain\/[\w-]+|langchain[-_][\w-]+|langgraph[-_][\w-]+|llama[-_]index[-_][\w-]+|@ai-sdk\/[\w-]+|openai[-_]agents[-_][\w-]+)$/i;
@@ -359,7 +360,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
   const { kind, reason } = detectRepoKind(manifests2, sources);
   if (kind === "library") notes.push(`Library/SDK layout detected (${reason}): call sites are most likely pass-through wrappers where the caller chooses the model and prompt, so findings are downgraded one level and the estimate is discounted.`);
   const promptLibrary = [];
-  const repoCaches = sources.some((f) => /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(f.content));
+  const repoCaches = sources.some((f) => /cache_control|cacheControl|prompt_cache_key|promptCacheKey|prompt_cache_options|promptCacheOptions|prompt_cache_breakpoint|promptCacheBreakpoint|prompt_cache_retention|promptCacheRetention|cachedContent|cached_content/.test(f.content));
   const PROMPT_FILE = /(^|\/)[^/]*(prompt|instruction|template|persona)s?[^/]*\.[a-z]+$|(^|\/)prompts?\//i;
   const PROMPT_NAME = /\b[\w.]*(prompt|system|instruction|template|persona)\w*\s*(:\s*[\w[\]|. ]+)?\s*[:=]\s*(f|r|rf|fr|b)?$/i;
   for (const f of sources) {
@@ -372,7 +373,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
       const lead = (masked[l.line - 1] ?? "").slice(0, Math.max(0, (masked[l.line - 1] ?? "").search(/["'`]|$/))).trimEnd();
       if (PROMPT_FILE.test(f.path) || PROMPT_NAME.test(lead) || PROMPT_NAME.test((masked[l.line - 2] ?? "").trimEnd())) promptLibrary.push({ file: f.path, line: l.line, tokens });
     }
-    const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(src);
+    const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|prompt_cache_options|promptCacheOptions|prompt_cache_breakpoint|promptCacheBreakpoint|prompt_cache_retention|promptCacheRetention|cachedContent|cached_content/.test(src);
     const illustrative = EXAMPLE_PATH.test(f.path);
     let repeatFlagged = false;
     const loc = makeLocator(masked);
@@ -393,6 +394,16 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
         local.push({ ...fd, severity: sev });
       };
       const refs = resolveScopes(loc, masked, scope);
+      if (sdk.startsWith("langchain")) {
+        const assigned = /^\s*(?:const|let|var|self\.|this\.)?\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=/.exec(masked[i])?.[1];
+        if (assigned) for (let l = 0; l < masked.length; l++) {
+          const inv = new RegExp(`\\b${assigned}\\.(invoke|ainvoke|stream|astream|batch|abatch|call|predict|generate)\\s*\\(`).exec(masked[l]);
+          if (!inv) continue;
+          const close = matchClose(loc.text, loc.starts[l] + inv.index + inv[0].length - 1);
+          const sc = { start: l, end: Math.max(l, loc.lineOf(close)) };
+          refs.push(sc, ...resolveScopes(loc, masked, sc));
+        }
+      }
       const inScopes = (l, scs) => scs.some((sc) => l.line - 1 >= sc.start && l.line - 1 <= sc.end);
       let near = literals.filter((l) => inScopes(l, [scope, ...refs]));
       if (!near.some((l) => l.text.trim().length > 20)) {
@@ -411,6 +422,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
       const prompts = near.filter((l) => promptLike(l.text));
       const codeCtx = masked.slice(Math.max(0, i - 25), i + 25).join("\n");
       const simpleTask = near.some((l) => SIMPLE_TASK.test(l.text));
+      const repeatTask = near.some((l) => REPEAT_TASK.test(l.text));
       const isAnthropic = sdk.includes("anthropic") || (model?.startsWith("claude") ?? false);
       const bigTok = prompts.reduce((a, l) => a + countTokens(l.text), 0);
       if (bigTok >= 300 && !hasCacheControl) {
@@ -440,7 +452,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           line: i + 1,
           title: `${key} used for a task whose prompt reads like extraction/classification`,
           detail: `${price.tier === "frontier" ? "Frontier" : "Full-size"} pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
-          fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident, with parity reported in the ledger, or switch the model here behind an eval.`,
+          fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident (an opt-in shadow parity monitor is coming; nothing is promised), or switch the model here behind an eval.`,
           est_savings_pct: Math.round((1 - b / a) * 100)
         });
       }
@@ -451,12 +463,12 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           file: f.path,
           line: i + 1,
           title: "LLM call inside a loop",
-          detail: "Per-item calls repeat the full prompt prefix for every element. If items are independent and latency-tolerant, the provider Batch API is 50% cheaper; if the prefix is shared, caching pays off immediately.",
-          fix: "Batch where possible; otherwise keep the shared prefix cache-formatted (TokenZero does this automatically).",
+          detail: 'Per-item calls repeat the full prompt prefix for every element. If items are independent and latency-tolerant, the provider Batch API is 50% cheaper, and OpenAI Flex processing (`service_tier: "flex"`) gives the same 50% on ordinary calls without restructuring; if the prefix is shared, caching pays off immediately.',
+          fix: 'Batch where possible, or set `service_tier: "flex"` on OpenAI calls that can wait; otherwise keep the shared prefix cache-formatted (TokenZero does this automatically).',
           est_savings_pct: 25
         });
       }
-      if (simpleTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
+      if (repeatTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
         repeatFlagged = true;
         push({
           severity: "low",
@@ -526,17 +538,32 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
 function filesFromDiff(diff) {
   const files = [];
   let cur = null;
+  let lineNo = 0;
   for (const line of diff.split("\n")) {
     const m = /^\+\+\+ b\/(.+)$/.exec(line);
     if (m) {
       cur = { path: m[1], content: "" };
       files.push(cur);
+      lineNo = 0;
       continue;
     }
     if (!cur) continue;
-    if (line.startsWith("+") && !line.startsWith("+++")) cur.content += line.slice(1) + "\n";
-    else if (line.startsWith(" ")) cur.content += line.slice(1) + "\n";
-    else if (line.startsWith("@@")) cur.content += "\n";
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h) {
+      const start = Number(h[1]);
+      while (lineNo < start - 1) {
+        cur.content += "\n";
+        lineNo++;
+      }
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      cur.content += line.slice(1) + "\n";
+      lineNo++;
+    } else if (line.startsWith(" ")) {
+      cur.content += line.slice(1) + "\n";
+      lineNo++;
+    } else if (line === "\\ No newline at end of file") continue;
   }
   return files;
 }
@@ -622,7 +649,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.3";
+var VERSION = "0.1.4";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };

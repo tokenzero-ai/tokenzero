@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { analyzeFiles, detectRepoKind, lex, prComment } from '../src/audit-core.ts';
+import { analyzeFiles, detectRepoKind, filesFromDiff, lex, prComment } from '../src/audit-core.ts';
 import { costOf, normalizeModel } from '../src/pricing.ts';
 
 const run = promisify(execFile);
@@ -56,4 +56,31 @@ test('bundle: committed CLI matches sources and runs', async () => {
   assert.equal(h(tmp), h('cli/bin/tokenzero.mjs'), 'run `npm run build` and commit cli/bin/tokenzero.mjs');
   const v = await run(process.execPath, ['cli/bin/tokenzero.mjs', 'version']);
   assert.equal(v.stdout.trim(), JSON.parse(fs.readFileSync('cli/package.json', 'utf8')).version, 'CLI VERSION constant matches cli/package.json');
+});
+
+test('analyzer: filesFromDiff preserves hunk line numbers and matches full-file findings', () => {
+  const full = [
+    '# line 1', '# line 2', '# line 3', '# line 4', '# line 5',
+    '# line 6', '# line 7', '# line 8', '# line 9', '# line 10',
+    'from openai import OpenAI',
+    'client = OpenAI()',
+    'SYSTEM_PROMPT = """' + 'You are an expert enterprise customer support triage agent. '.repeat(120) + '"""',
+    'def classify_ticket(ticket_text: str) -> str:',
+    '    resp = client.chat.completions.create(',
+    '        model="gpt-4o",',
+    '        messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Classify sentiment: " + ticket_text}],',
+    '    )',
+    '    return resp.choices[0].message.content',
+  ].join('\n') + '\n';
+  const hunk = [
+    'diff --git a/app.py b/app.py',
+    '--- a/app.py',
+    '+++ b/app.py',
+    '@@ -11,9 +11,9 @@',
+    ...full.split('\n').slice(10, 19).map(l => '+' + l),
+  ].join('\n') + '\n';
+  const a = analyzeFiles([{ path: 'app.py', content: full }]);
+  const b = analyzeFiles(filesFromDiff(hunk));
+  assert.deepEqual(b.findings.map(f => ({ line: f.line, title: f.title })), a.findings.map(f => ({ line: f.line, title: f.title })));
+  assert.equal(b.estimated_waste_pct, a.estimated_waste_pct);
 });

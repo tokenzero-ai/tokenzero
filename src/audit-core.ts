@@ -116,6 +116,7 @@ function promptLike(t: string): boolean {
 }
 
 /** Instruction phrasing that marks an extraction/classification-shaped task. Read only from prompt text. */
+const REPEAT_TASK = /\b(classify|classification|categori[sz]e|sentiment|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 const SIMPLE_TASK = /\b(classify|classification|categori[sz]e|sentiment|extract (the|all|every|any)|return (only |just )?(valid |a )?json|respond (only )?(with|in) (valid )?json|output (only )?(valid )?json|translate (this|the following|into)|summari[sz]e (this|the following|in \d+)|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 
 // ---- repo classification ------------------------------------------------------
@@ -241,7 +242,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
   if (kind === 'library') notes.push(`Library/SDK layout detected (${reason}): call sites are most likely pass-through wrappers where the caller chooses the model and prompt, so findings are downgraded one level and the estimate is discounted.`);
 
   const promptLibrary: { file: string; line: number; tokens: number }[] = [];
-  const repoCaches = sources.some(f => /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(f.content));
+  const repoCaches = sources.some(f => /cache_control|cacheControl|prompt_cache_key|promptCacheKey|prompt_cache_options|promptCacheOptions|prompt_cache_breakpoint|promptCacheBreakpoint|prompt_cache_retention|promptCacheRetention|cachedContent|cached_content/.test(f.content));
   const PROMPT_FILE = /(^|\/)[^/]*(prompt|instruction|template|persona)s?[^/]*\.[a-z]+$|(^|\/)prompts?\//i;
   const PROMPT_NAME = /\b[\w.]*(prompt|system|instruction|template|persona)\w*\s*(:\s*[\w[\]|. ]+)?\s*[:=]\s*(f|r|rf|fr|b)?$/i;
 
@@ -255,7 +256,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       const lead = (masked[l.line - 1] ?? '').slice(0, Math.max(0, (masked[l.line - 1] ?? '').search(/["'`]|$/))).trimEnd();
       if (PROMPT_FILE.test(f.path) || PROMPT_NAME.test(lead) || PROMPT_NAME.test((masked[l.line - 2] ?? '').trimEnd())) promptLibrary.push({ file: f.path, line: l.line, tokens });
     }
-    const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|cachedContent|cached_content/.test(src);
+    const hasCacheControl = /cache_control|cacheControl|prompt_cache_key|promptCacheKey|prompt_cache_options|promptCacheOptions|prompt_cache_breakpoint|promptCacheBreakpoint|prompt_cache_retention|promptCacheRetention|cachedContent|cached_content/.test(src);
     const illustrative = EXAMPLE_PATH.test(f.path);
     let repeatFlagged = false;
 
@@ -279,6 +280,16 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       };
       // Prompt text and model attributed to THIS call (see "call attribution" above).
       const refs = resolveScopes(loc, masked, scope);
+      if (sdk.startsWith('langchain')) {
+        const assigned = /^\s*(?:const|let|var|self\.|this\.)?\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=/.exec(masked[i])?.[1];
+        if (assigned) for (let l = 0; l < masked.length; l++) {
+          const inv = new RegExp(`\\b${assigned}\\.(invoke|ainvoke|stream|astream|batch|abatch|call|predict|generate)\\s*\\(`).exec(masked[l]);
+          if (!inv) continue;
+          const close = matchClose(loc.text, loc.starts[l] + inv.index + inv[0].length - 1);
+          const sc = { start: l, end: Math.max(l, loc.lineOf(close)) };
+          refs.push(sc, ...resolveScopes(loc, masked, sc));
+        }
+      }
       const inScopes = (l: Literal, scs: Scope[]) => scs.some(sc => l.line - 1 >= sc.start && l.line - 1 <= sc.end);
       let near = literals.filter(l => inScopes(l, [scope, ...refs]));
       if (!near.some(l => l.text.trim().length > 20)) {
@@ -299,6 +310,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       const prompts = near.filter(l => promptLike(l.text));
       const codeCtx = masked.slice(Math.max(0, i - 25), i + 25).join('\n');
       const simpleTask = near.some(l => SIMPLE_TASK.test(l.text));
+      const repeatTask = near.some(l => REPEAT_TASK.test(l.text));
       const isAnthropic = sdk.includes('anthropic') || (model?.startsWith('claude') ?? false);
 
       // 1. Large static prompt with no caching directive.
@@ -335,7 +347,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
           severity: price.tier === 'frontier' || ratio <= 0.2 ? 'high' : 'medium', file: f.path, line: i + 1,
           title: `${key} used for a task whose prompt reads like extraction/classification`,
           detail: `${price.tier === 'frontier' ? 'Frontier' : 'Full-size'} pricing ($${price.input}/M in, $${price.output}/M out) on a constrained task. ${to} costs ~${Math.round((1 - b / a) * 100)}% less per call at this shape.`,
-          fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident, with parity reported in the ledger, or switch the model here behind an eval.`,
+          fix: `Opt into TokenZero cascade routing (\`X-TokenZero-Cascade: auto\`) so this call is routed to ${to} only when the classifier is confident (an opt-in shadow parity monitor is coming; nothing is promised), or switch the model here behind an eval.`,
           est_savings_pct: Math.round((1 - b / a) * 100),
         });
       }
@@ -346,8 +358,8 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
         push({
           severity: 'medium', file: f.path, line: i + 1,
           title: 'LLM call inside a loop',
-          detail: 'Per-item calls repeat the full prompt prefix for every element. If items are independent and latency-tolerant, the provider Batch API is 50% cheaper; if the prefix is shared, caching pays off immediately.',
-          fix: 'Batch where possible; otherwise keep the shared prefix cache-formatted (TokenZero does this automatically).',
+          detail: 'Per-item calls repeat the full prompt prefix for every element. If items are independent and latency-tolerant, the provider Batch API is 50% cheaper, and OpenAI Flex processing (`service_tier: "flex"`) gives the same 50% on ordinary calls without restructuring; if the prefix is shared, caching pays off immediately.',
+          fix: 'Batch where possible, or set `service_tier: "flex"` on OpenAI calls that can wait; otherwise keep the shared prefix cache-formatted (TokenZero does this automatically).',
           est_savings_pct: 25,
         });
       }
@@ -355,7 +367,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       // 4. Repeat-prone task with no cache opt-in (once per file, informational).
       // Current reasoning models reject non-default temperature and Anthropic's
       // current API rejects sampling parameters, so temperature is never the advice.
-      if (simpleTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
+      if (repeatTask && !repeatFlagged && !/seed["']?\s*[:=]|temperature["']?\s*[:=]\s*0\b|X-TokenZero-Cache/i.test(spanText)) {
         repeatFlagged = true;
         push({
           severity: 'low', file: f.path, line: i + 1,
@@ -437,13 +449,20 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
 export function filesFromDiff(diff: string): SourceFile[] {
   const files: SourceFile[] = [];
   let cur: SourceFile | null = null;
+  let lineNo = 0;
   for (const line of diff.split('\n')) {
     const m = /^\+\+\+ b\/(.+)$/.exec(line);
-    if (m) { cur = { path: m[1], content: '' }; files.push(cur); continue; }
+    if (m) { cur = { path: m[1], content: '' }; files.push(cur); lineNo = 0; continue; }
     if (!cur) continue;
-    if (line.startsWith('+') && !line.startsWith('+++')) cur.content += line.slice(1) + '\n';
-    else if (line.startsWith(' ')) cur.content += line.slice(1) + '\n';   // context lines keep surrounding structure
-    else if (line.startsWith('@@')) cur.content += '\n';
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h) {
+      const start = Number(h[1]);
+      while (lineNo < start - 1) { cur.content += '\n'; lineNo++; }
+      continue;
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) { cur.content += line.slice(1) + '\n'; lineNo++; }
+    else if (line.startsWith(' ')) { cur.content += line.slice(1) + '\n'; lineNo++; }
+    else if (line === '\\ No newline at end of file') continue;
   }
   return files;
 }
