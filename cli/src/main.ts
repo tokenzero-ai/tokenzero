@@ -14,7 +14,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.1.4';
+const VERSION = '0.1.5';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -195,35 +195,68 @@ async function cmdInit(a: Args) {
     for (const s of stack.sdks) { const sn = snippet(s, stack.lang); if (sn) out(`  ${s.padEnd(10)} ${sn}`); }
   }
 
+  if (a.flags['github-action']) await setupGithubAction(root, a);
   if (a.flags.mcp) await setupMcp(root, base, a);
 
   out(`\n${bold('Next')}`);
   if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}`);
   out(`  usage       ${selfCmd(base)} usage`);
   if (wsId) out(`  badge       turn on public stats in the dashboard, then: [![LLM spend verified by TokenZero](${base}/v1/badge/${wsId}.svg)](${base}/dashboard?workspace=${wsId})`);
+  if (!a.flags['github-action']) out(`  PR checks   ${selfCmd(base)} init --github-action`);
   if (!a.flags.mcp) out(`  coding agents: ${selfCmd(base)} init --mcp`);
 }
 
 // How to re-invoke this CLI. The unscoped npm package name is owned by an
 // unrelated publisher, so hints must never point at the bare name: until
 // @tokenzero/cli is published, use the gateway-served tarball.
-const selfCmd = (base: string) => `npx -y ${base}/cli/tokenzero.tgz`;
+const selfCmd = (_base: string) => 'npx -y @tokenzero/cli';
 
 const redactKey = (s: string, key: string) => (key ? s.replace(key, key.slice(0, 12) + '…' + key.slice(-4)) : s);
+
+const GH_ACTION_YAML = `name: TokenZero LLM Cost Check
+on: [pull_request]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  cost-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tokenzero-ai/tokenzero/action@v0
+        with:
+          github-token: \${{ secrets.GITHUB_TOKEN }}
+`;
+
+async function setupGithubAction(root: string, a: Args) {
+  out(`\n${bold('GitHub Action')} ${dim('(PR token-waste & model-arbitrage check)')}`);
+  const wfDir = path.join(root, '.github', 'workflows');
+  const file = path.join(wfDir, 'tokenzero.yml');
+  if (fs.existsSync(file)) { out(dim(`  ${path.relative(root, file)} already exists`)); return; }
+  if (await confirm(`  Add ${path.relative(root, file)} to audit every PR?`, a)) {
+    fs.mkdirSync(wfDir, { recursive: true });
+    fs.writeFileSync(file, GH_ACTION_YAML);
+    out(green(`  ✓ wrote ${path.relative(root, file)}`));
+  }
+}
 
 async function setupMcp(root: string, base: string, a: Args) {
   out(`\n${bold('MCP')} ${dim('(audit_repo_token_waste, optimize_prompt_payload, calculate_model_arbitrage)')}`);
   out(`  Claude Code:  claude mcp add --transport http tokenzero ${base}/mcp`);
-  const cursorDir = path.join(root, '.cursor');
-  const file = path.join(cursorDir, 'mcp.json');
-  let cfg: any = {};
-  if (fs.existsSync(file)) { try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { out(yellow(`  ! ${file} is not valid JSON; not touching it`)); return; } }
-  if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) { out(dim('  Cursor: already configured')); return; }
-  if (await confirm(`  Add TokenZero to ${path.relative(root, file)} for Cursor?`, a)) {
-    cfg.mcpServers = { ...(cfg.mcpServers ?? {}), tokenzero: { url: `${base}/mcp` } };
-    fs.mkdirSync(cursorDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
-    out(green(`  ✓ wrote ${path.relative(root, file)}`));
+  out(`  Local stdio:  npx -y @tokenzero/mcp`);
+  for (const rel of [path.join('.cursor', 'mcp.json'), '.mcp.json']) {
+    const file = path.join(root, rel);
+    let cfg: any = {};
+    if (fs.existsSync(file)) { try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { out(yellow(`  ! ${file} is not valid JSON; not touching it`)); continue; } }
+    if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) { out(dim(`  ${rel}: already configured`)); continue; }
+    if (await confirm(`  Add TokenZero to ${rel}?`, a)) {
+      cfg.mcpServers = { ...(cfg.mcpServers ?? {}), tokenzero: { url: `${base}/mcp` } };
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+      out(green(`  ✓ wrote ${rel}`));
+    }
   }
 }
 
@@ -304,7 +337,7 @@ async function cmdVerify(a: Args) {
 function help() {
   out(`${bold('tokenzero')} v${VERSION} — cut your LLM bill with a BYOK gateway
 
-  ${bold('tokenzero init')} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp]
+  ${bold('tokenzero init')} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--github-action]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
   ${bold('tokenzero audit')} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.

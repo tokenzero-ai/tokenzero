@@ -25,7 +25,7 @@ export function pricingFreshness(nowMs = Date.now()) {
   return { version: PRICING_VERSION, age_days: ageDays, max_age_days: PRICING_MAX_AGE_DAYS, stale: ageDays > PRICING_MAX_AGE_DAYS || overdue.length > 0, overdue_reviews: overdue, upcoming_reviews: PRICING_REVIEWS.filter(r => r.on > today) };
 }
 
-export type Provider = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
+export type Provider = 'openai' | 'anthropic' | 'gemini' | 'xai' | 'deepseek' | 'openrouter';
 
 export interface Price {
   provider: Provider;
@@ -106,6 +106,19 @@ export const PRICES: Record<string, Price> = {
   'gemini-2.5-pro': P('gemini', 'frontier', 1.25, 10, 0.125, undefined, { longCtxAt: 200_000, longCtx: { input: 2.5, output: 15, cachedInput: 0.25 } }),
   'gemini-2.5-flash': P('gemini', 'fast', 0.3, 2.5, 0.03),
   'gemini-2.5-flash-lite': P('gemini', 'fast', 0.1, 0.4, 0.01),
+
+  // ---- xAI Grok ----
+  'grok-4': P('xai', 'frontier', 3, 15, 0.75),
+  'grok-4-fast': P('xai', 'fast', 0.2, 0.8, 0.05),
+  'grok-4-mini': P('xai', 'fast', 0.2, 0.8, 0.05),
+  'grok-3': P('xai', 'mid', 3, 15, 0.75),
+  'grok-3-mini': P('xai', 'fast', 0.3, 0.5, 0.075),
+
+  // ---- DeepSeek ----
+  'deepseek-v3': P('deepseek', 'fast', 0.27, 1.1, 0.07),
+  'deepseek-chat': P('deepseek', 'fast', 0.27, 1.1, 0.07),
+  'deepseek-r1': P('deepseek', 'mid', 0.55, 2.19, 0.14),
+  'deepseek-reasoner': P('deepseek', 'mid', 0.55, 2.19, 0.14),
 };
 
 /** Cheaper sibling for the opt-in cascade router and arbitrage math. */
@@ -139,6 +152,10 @@ export const CASCADE_TARGET: Record<string, string> = {
   'gemini-3.8-flash': 'gemini-3.5-flash-lite',
   'gemini-2.5-pro': 'gemini-2.5-flash',
   'gemini-2.5-flash': 'gemini-2.5-flash-lite',
+  'grok-4': 'grok-4-fast',
+  'grok-3': 'grok-3-mini',
+  'deepseek-r1': 'deepseek-v3',
+  'deepseek-reasoner': 'deepseek-chat',
 };
 
 const KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
@@ -152,7 +169,9 @@ const KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 export function normalizeModel(model: unknown): string | null {
   if (typeof model !== 'string' || !model) return null;
   let m = model.toLowerCase().trim();
-  m = m.replace(/^(openai|anthropic|google|models|vertex_ai)\//, '');
+  m = m.replace(/^(openai|anthropic|google|gemini|x-ai|xai|deepseek|bedrock|models|vertex_ai)\//, '');
+  m = m.replace(/^(?:us\.|eu\.|apac\.)?anthropic\./, '');
+  m = m.replace(/-v\d+:\d+$/, '');
   m = m.replace(/@\d{8}$/, '');
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '');
   m = m.replace(/-(latest|preview|customtools|thinking)$/, '');
@@ -201,6 +220,8 @@ export function providerOfModel(model: unknown): Provider {
   if (/^(openai|anthropic|google|meta|mistral|deepseek|x-ai|qwen)\//.test(m)) return 'openrouter';
   if (m.startsWith('claude')) return 'anthropic';
   if (m.startsWith('gemini') || m.startsWith('models/gemini')) return 'gemini';
+  if (m.startsWith('grok')) return 'xai';
+  if (m.startsWith('deepseek')) return 'deepseek';
   return 'openai';
 }
 
@@ -210,6 +231,7 @@ export function providerOfKey(key: string | undefined): Provider | null {
   if (key.startsWith('sk-ant-')) return 'anthropic';
   if (key.startsWith('sk-or-')) return 'openrouter';
   if (key.startsWith('AIza')) return 'gemini';
+  if (key.startsWith('xai-')) return 'xai';
   if (key.startsWith('sk-')) return 'openai';
   return null;
 }

@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { analyzeFiles, detectRepoKind, filesFromDiff, lex, prComment } from '../src/audit-core.ts';
-import { costOf, normalizeModel } from '../src/pricing.ts';
+import { CASCADE_TARGET, costOf, normalizeModel, pricingFreshness } from '../src/pricing.ts';
 
 const run = promisify(execFile);
 
@@ -44,9 +44,16 @@ test('analyzer: each finding lands on the call that owns the prompt', () => {
   assert.match(prComment(r), new RegExp(`\\(${r.estimated_waste_pct}% recoverable\\)`), 'header agrees with the findings');
 });
 
-test('pricing: list-price math', () => {
+test('pricing: list-price math and multi-provider normalization (OpenAI, Anthropic, Gemini, xAI, DeepSeek, Bedrock, OpenRouter)', () => {
   assert.equal(normalizeModel('claude-haiku-4-5-20251001'), 'claude-haiku-4-5');
+  assert.equal(normalizeModel('us.anthropic.claude-sonnet-4-5-20250929-v1:0'), 'claude-sonnet-4-5');
+  assert.equal(normalizeModel('x-ai/grok-4-2026-08-01'), 'grok-4');
+  assert.equal(normalizeModel('deepseek/deepseek-r1'), 'deepseek-r1');
+  assert.equal(CASCADE_TARGET['grok-4'], 'grok-4-fast');
+  assert.equal(CASCADE_TARGET['deepseek-r1'], 'deepseek-v3');
   assert.equal(costOf('claude-opus-5-5', { input: 1_000_000, output: 0, cachedInput: 1_000_000 }), 0.2);
+  assert.equal(costOf('grok-4', { input: 1_000_000, output: 0 }, 0.5), 1.5);
+  assert.equal(pricingFreshness().stale, false);
 });
 
 test('bundle: committed CLI matches sources and runs', async () => {
@@ -83,4 +90,13 @@ test('analyzer: filesFromDiff preserves hunk line numbers and matches full-file 
   const b = analyzeFiles(filesFromDiff(hunk));
   assert.deepEqual(b.findings.map(f => ({ line: f.line, title: f.title })), a.findings.map(f => ({ line: f.line, title: f.title })));
   assert.equal(b.estimated_waste_pct, a.estimated_waste_pct);
+});
+
+test('cli init: --github-action and --mcp write .github/workflows/tokenzero.yml, .cursor/mcp.json, and .mcp.json', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-init-'));
+  await run(process.execPath, ['cli/bin/tokenzero.mjs', 'init', dir, '--url', 'http://127.0.0.1:9', '--no-env', '--github-action', '--mcp', '--yes']);
+  assert.ok(fs.existsSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml')));
+  assert.match(fs.readFileSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml'), 'utf8'), /tokenzero-ai\/tokenzero\/action@v0/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.cursor', 'mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
 });

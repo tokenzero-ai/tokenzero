@@ -68,7 +68,18 @@ var PRICES = {
   "gemini-3-flash": P("gemini", "fast", 0.5, 3, 0.05),
   "gemini-2.5-pro": P("gemini", "frontier", 1.25, 10, 0.125, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 15, cachedInput: 0.25 } }),
   "gemini-2.5-flash": P("gemini", "fast", 0.3, 2.5, 0.03),
-  "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01)
+  "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01),
+  // ---- xAI Grok ----
+  "grok-4": P("xai", "frontier", 3, 15, 0.75),
+  "grok-4-fast": P("xai", "fast", 0.2, 0.8, 0.05),
+  "grok-4-mini": P("xai", "fast", 0.2, 0.8, 0.05),
+  "grok-3": P("xai", "mid", 3, 15, 0.75),
+  "grok-3-mini": P("xai", "fast", 0.3, 0.5, 0.075),
+  // ---- DeepSeek ----
+  "deepseek-v3": P("deepseek", "fast", 0.27, 1.1, 0.07),
+  "deepseek-chat": P("deepseek", "fast", 0.27, 1.1, 0.07),
+  "deepseek-r1": P("deepseek", "mid", 0.55, 2.19, 0.14),
+  "deepseek-reasoner": P("deepseek", "mid", 0.55, 2.19, 0.14)
 };
 var CASCADE_TARGET = {
   "gpt-6-astra": "gpt-6.1-sol",
@@ -99,13 +110,19 @@ var CASCADE_TARGET = {
   "gemini-3.1-pro": "gemini-3.8-flash",
   "gemini-3.8-flash": "gemini-3.5-flash-lite",
   "gemini-2.5-pro": "gemini-2.5-flash",
-  "gemini-2.5-flash": "gemini-2.5-flash-lite"
+  "gemini-2.5-flash": "gemini-2.5-flash-lite",
+  "grok-4": "grok-4-fast",
+  "grok-3": "grok-3-mini",
+  "deepseek-r1": "deepseek-v3",
+  "deepseek-reasoner": "deepseek-chat"
 };
 var KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
-  m = m.replace(/^(openai|anthropic|google|models|vertex_ai)\//, "");
+  m = m.replace(/^(openai|anthropic|google|gemini|x-ai|xai|deepseek|bedrock|models|vertex_ai)\//, "");
+  m = m.replace(/^(?:us\.|eu\.|apac\.)?anthropic\./, "");
+  m = m.replace(/-v\d+:\d+$/, "");
   m = m.replace(/@\d{8}$/, "");
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   m = m.replace(/-(latest|preview|customtools|thinking)$/, "");
@@ -667,7 +684,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.1.4";
+var VERSION = "0.1.5";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");

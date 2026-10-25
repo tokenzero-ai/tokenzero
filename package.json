@@ -11,7 +11,8 @@
   "scripts": {
     "build": "node cli/build.mjs && node mcp/build.mjs",
     "test": "node scripts/run-tests.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "frontier-check": "node scripts/frontier-check.mjs"
   },
   "dependencies": {
     "js-tiktoken": "1.0.21"

@@ -12,7 +12,7 @@ function encoder(): Tiktoken {
   return enc;
 }
 
-const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, openrouter: 1.05 };
+const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, xai: 1.02, deepseek: 1.04, openrouter: 1.05 };
 
 // System prompts and tool schemas repeat on nearly every request, and BPE encoding
 // dominated the gateway's CPU profile. Memoize raw counts for longer texts (LRU).

@@ -69,7 +69,18 @@ var PRICES = {
   "gemini-3-flash": P("gemini", "fast", 0.5, 3, 0.05),
   "gemini-2.5-pro": P("gemini", "frontier", 1.25, 10, 0.125, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 15, cachedInput: 0.25 } }),
   "gemini-2.5-flash": P("gemini", "fast", 0.3, 2.5, 0.03),
-  "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01)
+  "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01),
+  // ---- xAI Grok ----
+  "grok-4": P("xai", "frontier", 3, 15, 0.75),
+  "grok-4-fast": P("xai", "fast", 0.2, 0.8, 0.05),
+  "grok-4-mini": P("xai", "fast", 0.2, 0.8, 0.05),
+  "grok-3": P("xai", "mid", 3, 15, 0.75),
+  "grok-3-mini": P("xai", "fast", 0.3, 0.5, 0.075),
+  // ---- DeepSeek ----
+  "deepseek-v3": P("deepseek", "fast", 0.27, 1.1, 0.07),
+  "deepseek-chat": P("deepseek", "fast", 0.27, 1.1, 0.07),
+  "deepseek-r1": P("deepseek", "mid", 0.55, 2.19, 0.14),
+  "deepseek-reasoner": P("deepseek", "mid", 0.55, 2.19, 0.14)
 };
 var CASCADE_TARGET = {
   "gpt-6-astra": "gpt-6.1-sol",
@@ -100,13 +111,19 @@ var CASCADE_TARGET = {
   "gemini-3.1-pro": "gemini-3.8-flash",
   "gemini-3.8-flash": "gemini-3.5-flash-lite",
   "gemini-2.5-pro": "gemini-2.5-flash",
-  "gemini-2.5-flash": "gemini-2.5-flash-lite"
+  "gemini-2.5-flash": "gemini-2.5-flash-lite",
+  "grok-4": "grok-4-fast",
+  "grok-3": "grok-3-mini",
+  "deepseek-r1": "deepseek-v3",
+  "deepseek-reasoner": "deepseek-chat"
 };
 var KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
-  m = m.replace(/^(openai|anthropic|google|models|vertex_ai)\//, "");
+  m = m.replace(/^(openai|anthropic|google|gemini|x-ai|xai|deepseek|bedrock|models|vertex_ai)\//, "");
+  m = m.replace(/^(?:us\.|eu\.|apac\.)?anthropic\./, "");
+  m = m.replace(/-v\d+:\d+$/, "");
   m = m.replace(/@\d{8}$/, "");
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   m = m.replace(/-(latest|preview|customtools|thinking)$/, "");
@@ -649,7 +666,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.4";
+var VERSION = "0.1.5";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -856,40 +873,75 @@ ${bold("Your code")}`);
       if (sn) out(`  ${s.padEnd(10)} ${sn}`);
     }
   }
+  if (a.flags["github-action"]) await setupGithubAction(root, a);
   if (a.flags.mcp) await setupMcp(root, base, a);
   out(`
 ${bold("Next")}`);
   if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}`);
   out(`  usage       ${selfCmd(base)} usage`);
   if (wsId) out(`  badge       turn on public stats in the dashboard, then: [![LLM spend verified by TokenZero](${base}/v1/badge/${wsId}.svg)](${base}/dashboard?workspace=${wsId})`);
+  if (!a.flags["github-action"]) out(`  PR checks   ${selfCmd(base)} init --github-action`);
   if (!a.flags.mcp) out(`  coding agents: ${selfCmd(base)} init --mcp`);
 }
-var selfCmd = (base) => `npx -y ${base}/cli/tokenzero.tgz`;
+var selfCmd = (_base) => "npx -y @tokenzero/cli";
 var redactKey = (s, key) => key ? s.replace(key, key.slice(0, 12) + "\u2026" + key.slice(-4)) : s;
+var GH_ACTION_YAML = `name: TokenZero LLM Cost Check
+on: [pull_request]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  cost-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tokenzero-ai/tokenzero/action@v0
+        with:
+          github-token: \${{ secrets.GITHUB_TOKEN }}
+`;
+async function setupGithubAction(root, a) {
+  out(`
+${bold("GitHub Action")} ${dim("(PR token-waste & model-arbitrage check)")}`);
+  const wfDir = path2.join(root, ".github", "workflows");
+  const file = path2.join(wfDir, "tokenzero.yml");
+  if (fs2.existsSync(file)) {
+    out(dim(`  ${path2.relative(root, file)} already exists`));
+    return;
+  }
+  if (await confirm(`  Add ${path2.relative(root, file)} to audit every PR?`, a)) {
+    fs2.mkdirSync(wfDir, { recursive: true });
+    fs2.writeFileSync(file, GH_ACTION_YAML);
+    out(green(`  \u2713 wrote ${path2.relative(root, file)}`));
+  }
+}
 async function setupMcp(root, base, a) {
   out(`
 ${bold("MCP")} ${dim("(audit_repo_token_waste, optimize_prompt_payload, calculate_model_arbitrage)")}`);
   out(`  Claude Code:  claude mcp add --transport http tokenzero ${base}/mcp`);
-  const cursorDir = path2.join(root, ".cursor");
-  const file = path2.join(cursorDir, "mcp.json");
-  let cfg = {};
-  if (fs2.existsSync(file)) {
-    try {
-      cfg = JSON.parse(fs2.readFileSync(file, "utf8"));
-    } catch {
-      out(yellow(`  ! ${file} is not valid JSON; not touching it`));
-      return;
+  out(`  Local stdio:  npx -y @tokenzero/mcp`);
+  for (const rel of [path2.join(".cursor", "mcp.json"), ".mcp.json"]) {
+    const file = path2.join(root, rel);
+    let cfg = {};
+    if (fs2.existsSync(file)) {
+      try {
+        cfg = JSON.parse(fs2.readFileSync(file, "utf8"));
+      } catch {
+        out(yellow(`  ! ${file} is not valid JSON; not touching it`));
+        continue;
+      }
     }
-  }
-  if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) {
-    out(dim("  Cursor: already configured"));
-    return;
-  }
-  if (await confirm(`  Add TokenZero to ${path2.relative(root, file)} for Cursor?`, a)) {
-    cfg.mcpServers = { ...cfg.mcpServers ?? {}, tokenzero: { url: `${base}/mcp` } };
-    fs2.mkdirSync(cursorDir, { recursive: true });
-    fs2.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-    out(green(`  \u2713 wrote ${path2.relative(root, file)}`));
+    if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) {
+      out(dim(`  ${rel}: already configured`));
+      continue;
+    }
+    if (await confirm(`  Add TokenZero to ${rel}?`, a)) {
+      cfg.mcpServers = { ...cfg.mcpServers ?? {}, tokenzero: { url: `${base}/mcp` } };
+      fs2.mkdirSync(path2.dirname(file), { recursive: true });
+      fs2.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+      out(green(`  \u2713 wrote ${rel}`));
+    }
   }
 }
 async function cmdAudit(a) {
@@ -1007,7 +1059,7 @@ async function cmdVerify(a) {
 function help() {
   out(`${bold("tokenzero")} v${VERSION} \u2014 cut your LLM bill with a BYOK gateway
 
-  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp]
+  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--github-action]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
   ${bold("tokenzero audit")} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
