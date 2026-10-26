@@ -754,7 +754,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.1";
+var VERSION = "0.2.2";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };

@@ -1,0 +1,17 @@
+# Smithery indexing for @tokenzero/mcp (stdio). The hosted Streamable HTTP server is at https://tokenzero.sh/mcp
+# with its SEP-1649 card at https://tokenzero.sh/.well-known/mcp/server-card.json.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      tokenzeroUrl:
+        type: string
+        description: Gateway base URL
+        default: https://tokenzero.sh
+      tokenzeroKey:
+        type: string
+        description: Workspace key (tz_live_…) for workspace_metrics; optional
+    required: []
+  commandFunction: |-
+    (config) => ({ command: 'npx', args: ['-y', '@tokenzero/mcp@0.2.2'], env: { TOKENZERO_URL: config.tokenzeroUrl || 'https://tokenzero.sh', ...(config.tokenzeroKey ? { TOKENZERO_KEY: config.tokenzeroKey } : {}) } })
