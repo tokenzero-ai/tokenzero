@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.tokenzero-ai/tokenzero",
+  "name": "sh.tokenzero/mcp",
   "title": "TokenZero",
   "description": "LLM cost optimization gateway, repo token-waste auditor & model arbitrage MCP server.",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "websiteUrl": "https://tokenzero.sh",
   "repository": {
     "url": "https://github.com/tokenzero-ai/tokenzero",
@@ -13,6 +13,30 @@
     {
       "type": "streamable-http",
       "url": "https://tokenzero.sh/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@tokenzero/mcp",
+      "version": "0.2.4",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "TOKENZERO_URL",
+          "description": "Gateway base URL (default https://tokenzero.sh)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "TOKENZERO_KEY",
+          "description": "Workspace key (tz_live_\u2026) for workspace_metrics; optional",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
     }
   ]
 }

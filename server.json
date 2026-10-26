@@ -3,7 +3,7 @@
   "name": "sh.tokenzero/mcp",
   "title": "TokenZero",
   "description": "LLM cost optimization gateway, repo token-waste auditor & model arbitrage MCP server.",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "websiteUrl": "https://tokenzero.sh",
   "repository": {
     "url": "https://github.com/tokenzero-ai/tokenzero",
@@ -19,7 +19,7 @@
     {
       "registryType": "npm",
       "identifier": "@tokenzero/mcp",
-      "version": "0.2.2",
+      "version": "0.2.4",
       "transport": {
         "type": "stdio"
       },
