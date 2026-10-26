@@ -9,18 +9,18 @@ import readline from "node:readline";
 import crypto from "node:crypto";
 
 // src/pricing.ts
-var PRICING_VERSION = "2026-10-25";
+var PRICING_VERSION = "2026-10-26";
 var P = (provider, tier, input, output, cachedInput, cacheWrite, extra = {}) => ({ provider, tier, input, output, cachedInput, cacheWrite, ...extra });
 var PRICES = {
   // ---- OpenAI (standard tier, ≤272K; cache write = 30m TTL rate) ----
-  "gpt-6-astra": P("openai", "frontier", 10, 50, 1, 12.5, { longCtxAt: 272e3, longCtx: { input: 20, output: 75, cachedInput: 2, cacheWrite: 25 }, minCacheTokens: 1024 }),
-  "gpt-6.1-sol": P("openai", "mid", 2, 10, 0.1, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.2, cacheWrite: 5 }, minCacheTokens: 1024 }),
+  "gpt-6-astra": P("openai", "frontier", 10, 50, 1, 12.5, { ultrafast: true, longCtxAt: 272e3, longCtx: { input: 20, output: 75, cachedInput: 2, cacheWrite: 25 }, minCacheTokens: 1024 }),
+  "gpt-6.1-sol": P("openai", "mid", 2, 10, 0.1, 2.5, { ultrafast: true, longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.2, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-6-sol": P("openai", "mid", 2, 10, 0.2, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-6-luna": P("openai", "fast", 0.1, 0.5, 0.01, 0.125, { longCtxAt: 272e3, longCtx: { input: 0.2, output: 0.75, cachedInput: 0.02, cacheWrite: 0.25 }, minCacheTokens: 1024 }),
   "gpt-5.6-sol": P("openai", "frontier", 4, 20, 0.4, 5, { longCtxAt: 272e3, longCtx: { input: 8, output: 30, cachedInput: 0.8, cacheWrite: 10 }, minCacheTokens: 1024 }),
   "gpt-5.6-terra": P("openai", "mid", 2, 12, 0.2, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 18, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-5.6-luna": P("openai", "fast", 0.2, 1.2, 0.02, 0.25, { longCtxAt: 272e3, longCtx: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite: 0.5 }, minCacheTokens: 1024 }),
-  "gpt-5.5": P("openai", "frontier", 5, 30, 0.5, void 0, { longCtxAt: 272e3, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
+  "gpt-5.5": P("openai", "frontier", 5, 30, 0.5, void 0, { fastFactor: 2.5, longCtxAt: 272e3, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
   "gpt-5.5-pro": P("openai", "frontier", 30, 180),
   "gpt-5.4": P("openai", "frontier", 2.5, 15, 0.25, void 0, { longCtxAt: 272e3, longCtx: { input: 5, output: 22.5, cachedInput: 0.5 }, minCacheTokens: 1024 }),
   "gpt-5.4-pro": P("openai", "frontier", 30, 180),
@@ -38,10 +38,10 @@ var PRICES = {
   "o3-mini": P("openai", "fast", 1.1, 4.4, 0.55, void 0, { minCacheTokens: 1024 }),
   "o4-mini": P("openai", "fast", 1.1, 4.4, 0.275, void 0, { minCacheTokens: 1024 }),
   "o1": P("openai", "frontier", 15, 60, 7.5),
-  "gpt-4.1": P("openai", "mid", 2, 8, 0.5, void 0, { minCacheTokens: 1024 }),
+  "gpt-4.1": P("openai", "mid", 2, 8, 0.5, void 0, { fastFactor: 1.75, minCacheTokens: 1024 }),
   "gpt-4.1-mini": P("openai", "fast", 0.4, 1.6, 0.1, void 0, { minCacheTokens: 1024 }),
   "gpt-4.1-nano": P("openai", "fast", 0.1, 0.4, 0.025, void 0, { minCacheTokens: 1024 }),
-  "gpt-4o": P("openai", "mid", 2.5, 10, 1.25, void 0, { minCacheTokens: 1024 }),
+  "gpt-4o": P("openai", "mid", 2.5, 10, 1.25, void 0, { fastFactor: 1.7, minCacheTokens: 1024 }),
   "gpt-4o-mini": P("openai", "fast", 0.15, 0.6, 0.075, void 0, { minCacheTokens: 1024 }),
   // ---- Anthropic (cache write = 5-minute TTL, 1.25x; 1h TTL is 2x) ----
   "claude-fable-5-1": P("anthropic", "frontier", 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
@@ -52,7 +52,8 @@ var PRICES = {
   "claude-opus-4-7": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 2048 }),
   "claude-opus-4-6": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 4096 }),
   "claude-opus-4-5": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 4096 }),
-  "claude-sonnet-5-5": P("anthropic", "mid", 2, 10, 0.2, 2.5, { minCacheTokens: 512 }),
+  "claude-sonnet-5-5": P("anthropic", "mid", 2, 10, 0.1, 2.5, { minCacheTokens: 512 }),
+  // cache hits 0.05x base on Opus 5.5 and Sonnet 5.5
   "claude-sonnet-5": P("anthropic", "mid", 2, 10, 0.2, 2.5, { minCacheTokens: 1024 }),
   "claude-sonnet-4-6": P("anthropic", "mid", 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
   "claude-sonnet-4-5": P("anthropic", "mid", 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
@@ -69,18 +70,18 @@ var PRICES = {
   "gemini-2.5-pro": P("gemini", "frontier", 1.25, 10, 0.125, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 15, cachedInput: 0.25 } }),
   "gemini-2.5-flash": P("gemini", "fast", 0.3, 2.5, 0.03),
   "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01),
-  // ---- xAI Grok ----
-  "grok-4": P("xai", "frontier", 3, 15, 0.75),
-  "grok-4-fast": P("xai", "fast", 0.2, 0.8, 0.05),
-  "grok-4-mini": P("xai", "fast", 0.2, 0.8, 0.05),
-  "grok-3": P("xai", "mid", 3, 15, 0.75),
-  "grok-3-mini": P("xai", "fast", 0.3, 0.5, 0.075),
-  // ---- DeepSeek ----
-  "deepseek-v3": P("deepseek", "fast", 0.27, 1.1, 0.07),
-  "deepseek-chat": P("deepseek", "fast", 0.27, 1.1, 0.07),
-  "deepseek-r1": P("deepseek", "mid", 0.55, 2.19, 0.14),
-  "deepseek-reasoner": P("deepseek", "mid", 0.55, 2.19, 0.14)
+  // ---- xAI (docs.x.ai/docs/models; prompts over 200K tokens bill the whole request at 2x) ----
+  "grok-4.7": P("xai", "frontier", 2, 6, 0.5, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 1 } }),
+  "grok-4.6": P("xai", "frontier", 2, 6, 0.5, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 1 } }),
+  "grok-4.5": P("xai", "frontier", 2, 6, 0.3, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 0.6 } }),
+  "grok-4.3": P("xai", "mid", 1.25, 2.5, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 5, cachedInput: 0.4 } }),
+  "grok-4.20": P("xai", "mid", 1.25, 2.5, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 5, cachedInput: 0.4 } }),
+  "grok-build-0.1": P("xai", "fast", 1, 2, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2, output: 4, cachedInput: 0.4 } }),
+  // ---- DeepSeek (api-docs.deepseek.com; PEAK rates listed, off-peak is half: see priceModifier) ----
+  "deepseek-v4-pro": P("deepseek", "mid", 1.32, 3.96, 0.044),
+  "deepseek-flash": P("deepseek", "fast", 0.3, 1.2, 6e-3)
 };
+var MODEL_ALIASES = { "deepseek-v4-flash": "deepseek-flash", "deepseek-v4-flash-vision-exp": "deepseek-flash" };
 var CASCADE_TARGET = {
   "gpt-6-astra": "gpt-6.1-sol",
   "gpt-6.1-sol": "gpt-6-luna",
@@ -109,20 +110,21 @@ var CASCADE_TARGET = {
   "gemini-4-argon": "gemini-3.8-flash",
   "gemini-3.1-pro": "gemini-3.8-flash",
   "gemini-3.8-flash": "gemini-3.5-flash-lite",
+  "grok-4.7": "grok-4.3",
+  "grok-4.6": "grok-4.3",
+  "grok-4.5": "grok-4.3",
+  "deepseek-v4-pro": "deepseek-flash",
   "gemini-2.5-pro": "gemini-2.5-flash",
-  "gemini-2.5-flash": "gemini-2.5-flash-lite",
-  "grok-4": "grok-4-fast",
-  "grok-3": "grok-3-mini",
-  "deepseek-r1": "deepseek-v3",
-  "deepseek-reasoner": "deepseek-chat"
+  "gemini-2.5-flash": "gemini-2.5-flash-lite"
 };
 var KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
-  m = m.replace(/^(openai|anthropic|google|gemini|x-ai|xai|deepseek|bedrock|models|vertex_ai)\//, "");
-  m = m.replace(/^(?:us\.|eu\.|apac\.)?anthropic\./, "");
-  m = m.replace(/-v\d+:\d+$/, "");
+  m = m.replace(/^(openai|anthropic|google|models|vertex_ai|x-ai|xai|deepseek|bedrock|openrouter)\//, "");
+  m = m.replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|amazon|meta|mistral)\./, "");
+  m = m.replace(/-v\d+(?::\d+)?$/, "");
+  if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
   m = m.replace(/@\d{8}$/, "");
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   m = m.replace(/-(latest|preview|customtools|thinking)$/, "");
@@ -144,6 +146,33 @@ function costOf(model, u, factor = 1) {
   const M = 1e6;
   return factor * (fresh * tier.input / M + cached * (tier.cachedInput ?? tier.input) / M + written * (tier.cacheWrite ?? tier.input) / M + u.output * tier.output / M);
 }
+var MODEL_SUNSET = {
+  "gpt-4o": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4o-mini": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1-mini": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1-nano": { retires: "2026-10-23", replacement: "gpt-5.6-luna", announced: "2026-04-22" },
+  "gpt-5": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "gpt-5-mini": { retires: "2026-12-11", replacement: "gpt-5.6-terra", announced: "2026-06-11" },
+  "gpt-5-nano": { retires: "2026-12-11", replacement: "gpt-5.6-luna", announced: "2026-06-11" },
+  "gpt-5-pro": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "gpt-5.1": { retires: "2027-04-01", replacement: "gpt-6-sol", announced: "2026-10-01" },
+  "gpt-5.4-nano": { retires: "2027-04-01", replacement: "gpt-6-luna", announced: "2026-10-01" },
+  "o1": { retires: "2026-10-23", replacement: "gpt-5.6-sol", announced: "2026-04-22" },
+  "o3": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "o3-pro": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "o3-mini": { retires: "2026-10-23", replacement: "gpt-5.6-sol", announced: "2026-04-22" },
+  "o4-mini": { retires: "2026-10-23", replacement: "gpt-5.6-terra", announced: "2026-04-22" },
+  "claude-sonnet-4-5": { retires: "2026-11-30", replacement: "claude-sonnet-5-5", announced: "2026-09-30" }
+};
+function modelSunset(model, at = /* @__PURE__ */ new Date()) {
+  const key = normalizeModel(model);
+  if (!key) return null;
+  const s = MODEL_SUNSET[key];
+  if (!s) return null;
+  const days = Math.ceil((Date.parse(s.retires + "T00:00:00Z") - at.getTime()) / 864e5);
+  return { key, ...s, retired: days <= 0, days_left: Math.max(0, days) };
+}
 
 // cli/src/tokens-lite.ts
 function countTokens(text, _provider = "openai") {
@@ -154,7 +183,7 @@ function countTokens(text, _provider = "openai") {
 }
 
 // src/audit-core.ts
-var MODEL_RE = /["'`](?:openai\/|anthropic\/|google\/|models\/)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+))["'`]/g;
+var MODEL_RE = /["'`](?:(?:openai|anthropic|google|models|x-ai|xai|deepseek|bedrock|openrouter)\/|(?:us|eu|apac|global)\.anthropic\.|anthropic\.)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+|grok-[\w.-]+|deepseek-[\w.-]+)(?::\d+)?)["'`]/g;
 var CALL_RE = [
   [/\.chat\.completions\.(create|parse)\s*\(/, "openai-chat"],
   [/\.responses\.(create|parse|stream)\s*\(/, "openai-responses"],
@@ -365,6 +394,7 @@ function resolveScopes(loc, masked, from, depth = 2) {
   }
   return out;
 }
+var AUDIT_AT = new Date(process.env.TOKENZERO_AUDIT_AT || Date.now());
 function analyzeFiles(files, repo = null, manifests2 = []) {
   const findings = [];
   const callSites = [];
@@ -507,6 +537,19 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           est_savings_pct: 8
         });
       }
+      const sunset = model && key ? modelSunset(key, AUDIT_AT) : null;
+      if (sunset && !unknownModels.has("sunset:" + key)) {
+        unknownModels.add("sunset:" + key);
+        push({
+          severity: sunset.retired ? "high" : sunset.days_left <= 90 ? "medium" : "low",
+          file: f.path,
+          line: i + 1,
+          title: sunset.retired ? `Retired model "${model}"` : `"${model}" retires on ${sunset.retires}`,
+          detail: sunset.retired ? `The provider shut this model down on ${sunset.retires}; requests fail or are remapped. Recommended replacement: ${sunset.replacement}.` : `The provider announced on ${sunset.announced} that this model retires on ${sunset.retires} (${sunset.days_left} days). Recommended replacement: ${sunset.replacement}.`,
+          fix: `Move to ${sunset.replacement} (eval first); TokenZero's cascade can route to it, and the gateway warns in X-TokenZero-Warning until you do.`,
+          est_savings_pct: 0
+        });
+      }
       if (model && !key && !unknownModels.has(model)) {
         unknownModels.add(model);
         push({ severity: "info", file: f.path, line: i + 1, title: `Unrecognised model id "${model}"`, detail: "Not in the current pricing table: it may be retired or renamed. Retired models return errors or are silently remapped by some providers.", fix: "Check the provider model list; TokenZero flags unpriced models in `X-TokenZero-Warning`.", est_savings_pct: 0 });
@@ -638,8 +681,35 @@ function modelArbitrage(args) {
     pricing_version: PRICING_VERSION,
     requested: rows[0],
     alternatives: rows.slice(1).map((r) => ({ ...r, savings_pct_vs_requested: Math.round((1 - r.per_request_usd / rows[0].per_request_usd) * 1e3) / 10 })),
-    caveat: "List prices. Cheaper models need an eval before swapping; TokenZero cascade routing is opt-in and reports observed parity."
+    caveat: "List prices. Cheaper models need an eval before swapping; TokenZero cascade routing is opt-in and advisory by default; an opt-in shadow parity monitor is coming."
   };
+}
+
+// src/mcp-protocol.ts
+var MCP_MODERN_VERSIONS = ["2026-07-28"];
+var MCP_LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
+var META = {
+  version: "io.modelcontextprotocol/protocolVersion",
+  clientInfo: "io.modelcontextprotocol/clientInfo",
+  clientCapabilities: "io.modelcontextprotocol/clientCapabilities",
+  serverInfo: "io.modelcontextprotocol/serverInfo"
+};
+var RPC = { parse: -32700, methodNotFound: -32601, invalidParams: -32602, internal: -32603, headerMismatch: -32020, unsupportedVersion: -32022 };
+var LIST_TTL_MS = 36e5;
+function requestedVersion(m) {
+  const v = m?.params?._meta?.[META.version];
+  return typeof v === "string" ? v : void 0;
+}
+var isModern = (m) => requestedVersion(m) !== void 0;
+var versionSupported = (v) => MCP_MODERN_VERSIONS.includes(v);
+function unsupportedVersionError(requested) {
+  return { code: RPC.unsupportedVersion, message: "Unsupported protocol version", data: { supported: [...MCP_MODERN_VERSIONS], requested } };
+}
+function modernResult(result, server, cacheable = false) {
+  return { resultType: "complete", ...result, ...cacheable ? { ttlMs: LIST_TTL_MS, cacheScope: "public" } : {}, _meta: { [META.serverInfo]: server } };
+}
+function discoverResult(server, capabilities, instructions) {
+  return modernResult({ supportedVersions: [...MCP_MODERN_VERSIONS], capabilities, instructions }, server, true);
 }
 
 // cli/src/scan.ts
@@ -684,9 +754,12 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.1.6";
+var VERSION = "0.1.7";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
-var SUPPORTED = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
+var SUPPORTED = [...MCP_LEGACY_VERSIONS];
+var SERVER = { name: "tokenzero", version: VERSION };
+var CAPABILITIES = { tools: { listChanged: false } };
+var INSTRUCTIONS = "Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.";
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");
 var TOOLS = [
   {
@@ -706,8 +779,8 @@ var TOOLS = [
   },
   {
     name: "provision_workspace",
-    description: "Zero-click autonomous workspace and API key provisioning on TokenZero (POST /v1/workspaces). Returns a live tz_live_... API key, workspace_id, 1-click auto-unlock dashboard URL, gateway base URLs, and badge SVG URL with zero signup form required.",
-    inputSchema: { type: "object", properties: { name: { type: "string", description: "Optional workspace name (defaults to mcp-agent)" } }, additionalProperties: false }
+    description: "Create a TokenZero workspace and key with no form (POST /v1/workspaces on the TokenZero service). Returns the key once, the base URLs that route through it, the one-click dashboard link (key in the URL fragment, never sent to the server) and the badge URL. Free up to the monthly free tier; nothing is billed.",
+    inputSchema: { type: "object", properties: { name: { type: "string", description: 'workspace name (defaults to "mcp-agent")' } }, additionalProperties: false }
   }
 ];
 async function callTool(name, args) {
@@ -738,34 +811,28 @@ async function callTool(name, args) {
     }
     case "provision_workspace": {
       const base = serviceUrl();
-      if (!base) throw new Error("set TOKENZERO_URL to use this tool");
-      const wsName = typeof args?.name === "string" && args.name.trim() ? args.name.trim() : "mcp-agent";
-      const r = await fetch(base + "/v1/workspaces", {
-        method: "POST",
-        redirect: "manual",
-        signal: AbortSignal.timeout(15e3),
-        headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` },
-        body: JSON.stringify({ name: wsName })
-      }).catch((e) => {
+      if (!base) throw new Error("set TOKENZERO_URL to use this tool (workspaces live in the TokenZero service)");
+      const wsName = typeof args?.name === "string" && args.name.trim() ? args.name.trim().slice(0, 64) : "mcp-agent";
+      const r = await fetch(base + "/v1/workspaces", { method: "POST", redirect: "manual", signal: AbortSignal.timeout(15e3), headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ name: wsName }) }).catch((e) => {
         throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`);
       });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
       const j = await r.json();
-      if (r.status >= 400) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
-      const id = j.workspace?.id ?? j.workspace_id ?? j.id;
-      const key = j.key ?? j.api_key;
+      if (r.status !== 201) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
+      const id = j.workspace.id, key = j.key;
       return {
         workspace_id: id,
-        api_key: key,
         name: wsName,
+        api_key: key,
+        url: base,
+        openai_base_url: `${base}/w/${key}/v1`,
+        anthropic_base_url: `${base}/w/${key}`,
+        gemini_native_base_url: `${base}/w/${key}`,
         dashboard_url: `${base}/dashboard?workspace=${id}`,
         one_click_dashboard_url: `${base}/dashboard?workspace=${id}#key=${key}`,
-        gateway_base_url: `${base}/v1`,
-        anthropic_base_url: base,
-        gemini_base_url: `${base}/gemini`,
-        zero_code_base_url: `${base}/w/${key}/v1`,
         mcp_url: `${base}/mcp`,
-        badge_svg_url: `${base}/v1/badge/${id}.svg`
+        badge_svg_url: `${base}/v1/badge/${id}.svg`,
+        note: "Store the key where secrets live (env or a secrets manager), never in the repository. Free up to the monthly free tier; nothing is billed."
       };
     }
     default:
@@ -777,39 +844,54 @@ async function handle(m) {
   const isRequest = m && m.id !== void 0 && m.id !== null && typeof m.method === "string";
   const reply = (result) => isRequest && send({ jsonrpc: "2.0", id: m.id, result });
   const fail = (code, message) => isRequest && send({ jsonrpc: "2.0", id: m.id, error: { code, message } });
+  const failData = (code, message, data) => isRequest && send({ jsonrpc: "2.0", id: m.id, error: { code, message, data } });
+  const call = async () => {
+    try {
+      const r = await callTool(m.params?.name, m.params?.arguments ?? {});
+      return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], structuredContent: r, isError: false };
+    } catch (e) {
+      return { content: [{ type: "text", text: `error: ${e?.message ?? e}` }], isError: true };
+    }
+  };
   try {
+    if (isModern(m)) {
+      const v = requestedVersion(m);
+      if (!versionSupported(v)) {
+        const e = unsupportedVersionError(v);
+        return failData(e.code, e.message, e.data);
+      }
+      switch (m.method) {
+        case "server/discover":
+          return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
+        case "tools/list":
+          return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case "tools/call":
+          return reply(modernResult(await call(), SERVER));
+        default:
+          if (typeof m.method === "string" && m.method.startsWith("notifications/")) return;
+          return fail(RPC.methodNotFound, `method not found: ${m.method}`);
+      }
+    }
     switch (m?.method) {
       case "initialize": {
         const want = m.params?.protocolVersion;
-        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: "tokenzero", version: VERSION }, instructions: "Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly." });
+        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
       }
-      case "server/discover":
-        return reply({
-          resultType: "complete",
-          supportedVersions: ["2026-07-28"],
-          capabilities: { tools: { listChanged: false } },
-          instructions: "Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.",
-          ttlMs: 36e5,
-          cacheScope: "public",
-          _meta: { "io.modelcontextprotocol/serverInfo": { name: "tokenzero", version: VERSION } }
-        });
       case "ping":
         return reply({});
+      // The stdio backward-compatibility probe: a dual-era client sends this first.
+      case "server/discover":
+        return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
       case "tools/list":
         return reply({ tools: TOOLS });
       case "tools/call":
-        try {
-          const r = await callTool(m.params?.name, m.params?.arguments ?? {});
-          return reply({ content: [{ type: "text", text: JSON.stringify(r, null, 2) }], structuredContent: r, isError: false });
-        } catch (e) {
-          return reply({ content: [{ type: "text", text: `error: ${e?.message ?? e}` }], isError: true });
-        }
+        return reply(await call());
       default:
         if (typeof m?.method === "string" && m.method.startsWith("notifications/")) return;
-        return fail(-32601, `method not found: ${m?.method}`);
+        return fail(RPC.methodNotFound, `method not found: ${m?.method}`);
     }
   } catch (e) {
-    fail(-32603, e?.message ?? "internal error");
+    fail(RPC.internal, e?.message ?? "internal error");
   }
 }
 var rl = readline.createInterface({ input: process.stdin, terminal: false });

@@ -15,14 +15,14 @@ import crypto from "node:crypto";
 var P = (provider, tier, input, output, cachedInput, cacheWrite, extra = {}) => ({ provider, tier, input, output, cachedInput, cacheWrite, ...extra });
 var PRICES = {
   // ---- OpenAI (standard tier, ≤272K; cache write = 30m TTL rate) ----
-  "gpt-6-astra": P("openai", "frontier", 10, 50, 1, 12.5, { longCtxAt: 272e3, longCtx: { input: 20, output: 75, cachedInput: 2, cacheWrite: 25 }, minCacheTokens: 1024 }),
-  "gpt-6.1-sol": P("openai", "mid", 2, 10, 0.1, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.2, cacheWrite: 5 }, minCacheTokens: 1024 }),
+  "gpt-6-astra": P("openai", "frontier", 10, 50, 1, 12.5, { ultrafast: true, longCtxAt: 272e3, longCtx: { input: 20, output: 75, cachedInput: 2, cacheWrite: 25 }, minCacheTokens: 1024 }),
+  "gpt-6.1-sol": P("openai", "mid", 2, 10, 0.1, 2.5, { ultrafast: true, longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.2, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-6-sol": P("openai", "mid", 2, 10, 0.2, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 15, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-6-luna": P("openai", "fast", 0.1, 0.5, 0.01, 0.125, { longCtxAt: 272e3, longCtx: { input: 0.2, output: 0.75, cachedInput: 0.02, cacheWrite: 0.25 }, minCacheTokens: 1024 }),
   "gpt-5.6-sol": P("openai", "frontier", 4, 20, 0.4, 5, { longCtxAt: 272e3, longCtx: { input: 8, output: 30, cachedInput: 0.8, cacheWrite: 10 }, minCacheTokens: 1024 }),
   "gpt-5.6-terra": P("openai", "mid", 2, 12, 0.2, 2.5, { longCtxAt: 272e3, longCtx: { input: 4, output: 18, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   "gpt-5.6-luna": P("openai", "fast", 0.2, 1.2, 0.02, 0.25, { longCtxAt: 272e3, longCtx: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite: 0.5 }, minCacheTokens: 1024 }),
-  "gpt-5.5": P("openai", "frontier", 5, 30, 0.5, void 0, { longCtxAt: 272e3, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
+  "gpt-5.5": P("openai", "frontier", 5, 30, 0.5, void 0, { fastFactor: 2.5, longCtxAt: 272e3, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
   "gpt-5.5-pro": P("openai", "frontier", 30, 180),
   "gpt-5.4": P("openai", "frontier", 2.5, 15, 0.25, void 0, { longCtxAt: 272e3, longCtx: { input: 5, output: 22.5, cachedInput: 0.5 }, minCacheTokens: 1024 }),
   "gpt-5.4-pro": P("openai", "frontier", 30, 180),
@@ -40,10 +40,10 @@ var PRICES = {
   "o3-mini": P("openai", "fast", 1.1, 4.4, 0.55, void 0, { minCacheTokens: 1024 }),
   "o4-mini": P("openai", "fast", 1.1, 4.4, 0.275, void 0, { minCacheTokens: 1024 }),
   "o1": P("openai", "frontier", 15, 60, 7.5),
-  "gpt-4.1": P("openai", "mid", 2, 8, 0.5, void 0, { minCacheTokens: 1024 }),
+  "gpt-4.1": P("openai", "mid", 2, 8, 0.5, void 0, { fastFactor: 1.75, minCacheTokens: 1024 }),
   "gpt-4.1-mini": P("openai", "fast", 0.4, 1.6, 0.1, void 0, { minCacheTokens: 1024 }),
   "gpt-4.1-nano": P("openai", "fast", 0.1, 0.4, 0.025, void 0, { minCacheTokens: 1024 }),
-  "gpt-4o": P("openai", "mid", 2.5, 10, 1.25, void 0, { minCacheTokens: 1024 }),
+  "gpt-4o": P("openai", "mid", 2.5, 10, 1.25, void 0, { fastFactor: 1.7, minCacheTokens: 1024 }),
   "gpt-4o-mini": P("openai", "fast", 0.15, 0.6, 0.075, void 0, { minCacheTokens: 1024 }),
   // ---- Anthropic (cache write = 5-minute TTL, 1.25x; 1h TTL is 2x) ----
   "claude-fable-5-1": P("anthropic", "frontier", 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
@@ -54,7 +54,8 @@ var PRICES = {
   "claude-opus-4-7": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 2048 }),
   "claude-opus-4-6": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 4096 }),
   "claude-opus-4-5": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 4096 }),
-  "claude-sonnet-5-5": P("anthropic", "mid", 2, 10, 0.2, 2.5, { minCacheTokens: 512 }),
+  "claude-sonnet-5-5": P("anthropic", "mid", 2, 10, 0.1, 2.5, { minCacheTokens: 512 }),
+  // cache hits 0.05x base on Opus 5.5 and Sonnet 5.5
   "claude-sonnet-5": P("anthropic", "mid", 2, 10, 0.2, 2.5, { minCacheTokens: 1024 }),
   "claude-sonnet-4-6": P("anthropic", "mid", 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
   "claude-sonnet-4-5": P("anthropic", "mid", 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
@@ -71,18 +72,18 @@ var PRICES = {
   "gemini-2.5-pro": P("gemini", "frontier", 1.25, 10, 0.125, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 15, cachedInput: 0.25 } }),
   "gemini-2.5-flash": P("gemini", "fast", 0.3, 2.5, 0.03),
   "gemini-2.5-flash-lite": P("gemini", "fast", 0.1, 0.4, 0.01),
-  // ---- xAI Grok ----
-  "grok-4": P("xai", "frontier", 3, 15, 0.75),
-  "grok-4-fast": P("xai", "fast", 0.2, 0.8, 0.05),
-  "grok-4-mini": P("xai", "fast", 0.2, 0.8, 0.05),
-  "grok-3": P("xai", "mid", 3, 15, 0.75),
-  "grok-3-mini": P("xai", "fast", 0.3, 0.5, 0.075),
-  // ---- DeepSeek ----
-  "deepseek-v3": P("deepseek", "fast", 0.27, 1.1, 0.07),
-  "deepseek-chat": P("deepseek", "fast", 0.27, 1.1, 0.07),
-  "deepseek-r1": P("deepseek", "mid", 0.55, 2.19, 0.14),
-  "deepseek-reasoner": P("deepseek", "mid", 0.55, 2.19, 0.14)
+  // ---- xAI (docs.x.ai/docs/models; prompts over 200K tokens bill the whole request at 2x) ----
+  "grok-4.7": P("xai", "frontier", 2, 6, 0.5, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 1 } }),
+  "grok-4.6": P("xai", "frontier", 2, 6, 0.5, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 1 } }),
+  "grok-4.5": P("xai", "frontier", 2, 6, 0.3, void 0, { longCtxAt: 2e5, longCtx: { input: 4, output: 12, cachedInput: 0.6 } }),
+  "grok-4.3": P("xai", "mid", 1.25, 2.5, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 5, cachedInput: 0.4 } }),
+  "grok-4.20": P("xai", "mid", 1.25, 2.5, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2.5, output: 5, cachedInput: 0.4 } }),
+  "grok-build-0.1": P("xai", "fast", 1, 2, 0.2, void 0, { longCtxAt: 2e5, longCtx: { input: 2, output: 4, cachedInput: 0.4 } }),
+  // ---- DeepSeek (api-docs.deepseek.com; PEAK rates listed, off-peak is half: see priceModifier) ----
+  "deepseek-v4-pro": P("deepseek", "mid", 1.32, 3.96, 0.044),
+  "deepseek-flash": P("deepseek", "fast", 0.3, 1.2, 6e-3)
 };
+var MODEL_ALIASES = { "deepseek-v4-flash": "deepseek-flash", "deepseek-v4-flash-vision-exp": "deepseek-flash" };
 var CASCADE_TARGET = {
   "gpt-6-astra": "gpt-6.1-sol",
   "gpt-6.1-sol": "gpt-6-luna",
@@ -111,20 +112,21 @@ var CASCADE_TARGET = {
   "gemini-4-argon": "gemini-3.8-flash",
   "gemini-3.1-pro": "gemini-3.8-flash",
   "gemini-3.8-flash": "gemini-3.5-flash-lite",
+  "grok-4.7": "grok-4.3",
+  "grok-4.6": "grok-4.3",
+  "grok-4.5": "grok-4.3",
+  "deepseek-v4-pro": "deepseek-flash",
   "gemini-2.5-pro": "gemini-2.5-flash",
-  "gemini-2.5-flash": "gemini-2.5-flash-lite",
-  "grok-4": "grok-4-fast",
-  "grok-3": "grok-3-mini",
-  "deepseek-r1": "deepseek-v3",
-  "deepseek-reasoner": "deepseek-chat"
+  "gemini-2.5-flash": "gemini-2.5-flash-lite"
 };
 var KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
-  m = m.replace(/^(openai|anthropic|google|gemini|x-ai|xai|deepseek|bedrock|models|vertex_ai)\//, "");
-  m = m.replace(/^(?:us\.|eu\.|apac\.)?anthropic\./, "");
-  m = m.replace(/-v\d+:\d+$/, "");
+  m = m.replace(/^(openai|anthropic|google|models|vertex_ai|x-ai|xai|deepseek|bedrock|openrouter)\//, "");
+  m = m.replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|amazon|meta|mistral)\./, "");
+  m = m.replace(/-v\d+(?::\d+)?$/, "");
+  if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
   m = m.replace(/@\d{8}$/, "");
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   m = m.replace(/-(latest|preview|customtools|thinking)$/, "");
@@ -146,6 +148,33 @@ function costOf(model, u, factor = 1) {
   const M = 1e6;
   return factor * (fresh * tier.input / M + cached * (tier.cachedInput ?? tier.input) / M + written * (tier.cacheWrite ?? tier.input) / M + u.output * tier.output / M);
 }
+var MODEL_SUNSET = {
+  "gpt-4o": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4o-mini": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1-mini": { retires: "2027-01-14", replacement: "gpt-6-luna", announced: "2026-10-14" },
+  "gpt-4.1-nano": { retires: "2026-10-23", replacement: "gpt-5.6-luna", announced: "2026-04-22" },
+  "gpt-5": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "gpt-5-mini": { retires: "2026-12-11", replacement: "gpt-5.6-terra", announced: "2026-06-11" },
+  "gpt-5-nano": { retires: "2026-12-11", replacement: "gpt-5.6-luna", announced: "2026-06-11" },
+  "gpt-5-pro": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "gpt-5.1": { retires: "2027-04-01", replacement: "gpt-6-sol", announced: "2026-10-01" },
+  "gpt-5.4-nano": { retires: "2027-04-01", replacement: "gpt-6-luna", announced: "2026-10-01" },
+  "o1": { retires: "2026-10-23", replacement: "gpt-5.6-sol", announced: "2026-04-22" },
+  "o3": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "o3-pro": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
+  "o3-mini": { retires: "2026-10-23", replacement: "gpt-5.6-sol", announced: "2026-04-22" },
+  "o4-mini": { retires: "2026-10-23", replacement: "gpt-5.6-terra", announced: "2026-04-22" },
+  "claude-sonnet-4-5": { retires: "2026-11-30", replacement: "claude-sonnet-5-5", announced: "2026-09-30" }
+};
+function modelSunset(model, at = /* @__PURE__ */ new Date()) {
+  const key = normalizeModel(model);
+  if (!key) return null;
+  const s = MODEL_SUNSET[key];
+  if (!s) return null;
+  const days = Math.ceil((Date.parse(s.retires + "T00:00:00Z") - at.getTime()) / 864e5);
+  return { key, ...s, retired: days <= 0, days_left: Math.max(0, days) };
+}
 
 // cli/src/tokens-lite.ts
 function countTokens(text, _provider = "openai") {
@@ -156,7 +185,7 @@ function countTokens(text, _provider = "openai") {
 }
 
 // src/audit-core.ts
-var MODEL_RE = /["'`](?:openai\/|anthropic\/|google\/|models\/)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+))["'`]/g;
+var MODEL_RE = /["'`](?:(?:openai|anthropic|google|models|x-ai|xai|deepseek|bedrock|openrouter)\/|(?:us|eu|apac|global)\.anthropic\.|anthropic\.)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+|grok-[\w.-]+|deepseek-[\w.-]+)(?::\d+)?)["'`]/g;
 var CALL_RE = [
   [/\.chat\.completions\.(create|parse)\s*\(/, "openai-chat"],
   [/\.responses\.(create|parse|stream)\s*\(/, "openai-responses"],
@@ -367,6 +396,7 @@ function resolveScopes(loc, masked, from, depth = 2) {
   }
   return out2;
 }
+var AUDIT_AT = new Date(process.env.TOKENZERO_AUDIT_AT || Date.now());
 function analyzeFiles(files, repo = null, manifests2 = []) {
   const findings = [];
   const callSites = [];
@@ -507,6 +537,19 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
           detail: "Tool schemas render before the system prompt in the cached prefix. Without a breakpoint on the last tool they are billed in full on every call.",
           fix: "TokenZero marks the last tool automatically; manually, add `cache_control` to the last tool definition.",
           est_savings_pct: 8
+        });
+      }
+      const sunset = model && key ? modelSunset(key, AUDIT_AT) : null;
+      if (sunset && !unknownModels.has("sunset:" + key)) {
+        unknownModels.add("sunset:" + key);
+        push({
+          severity: sunset.retired ? "high" : sunset.days_left <= 90 ? "medium" : "low",
+          file: f.path,
+          line: i + 1,
+          title: sunset.retired ? `Retired model "${model}"` : `"${model}" retires on ${sunset.retires}`,
+          detail: sunset.retired ? `The provider shut this model down on ${sunset.retires}; requests fail or are remapped. Recommended replacement: ${sunset.replacement}.` : `The provider announced on ${sunset.announced} that this model retires on ${sunset.retires} (${sunset.days_left} days). Recommended replacement: ${sunset.replacement}.`,
+          fix: `Move to ${sunset.replacement} (eval first); TokenZero's cascade can route to it, and the gateway warns in X-TokenZero-Warning until you do.`,
+          est_savings_pct: 0
         });
       }
       if (model && !key && !unknownModels.has(model)) {
@@ -667,7 +710,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.6";
+var VERSION = "0.1.7";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -841,6 +884,7 @@ async function cmdInit(a) {
       key = r.body.key;
       wsId = r.body.workspace.id;
       out(`${bold("Workspace")} ${wsId} ${dim("created")}`);
+      saveCreds({ workspace_id: wsId, api_key: key, url: base });
     } catch (e) {
       err(yellow(`! ${e.message}`));
       err(dim("  Continuing without a workspace key: requests will be grouped by an anonymous workspace derived from your provider key."));
@@ -874,83 +918,18 @@ ${bold("Your code")}`);
       if (sn) out(`  ${s.padEnd(10)} ${sn}`);
     }
   }
-  if (a.flags["github-action"]) await setupGithubAction(root, a);
   if (a.flags.mcp) await setupMcp(root, base, a);
   if (a.flags["agent-rules"]) await setupAgentRules(root, base, a);
-  if (key && wsId) saveCreds({ workspace_id: wsId, api_key: key, url: base });
+  if (!a.flags["no-github-action"] && (a.flags["github-action"] || fs2.existsSync(path2.join(root, ".git")))) await setupGithubAction(root, a);
   out(`
 ${bold("Next")}`);
-  if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}${key ? "#key=" + redactKey(key, key) : ""}`);
+  if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}   ${dim("(one-click unlock link: " + selfCmd(base) + " dashboard)")}`);
   out(`  usage       ${selfCmd(base)} usage`);
   if (wsId) out(`  badge       turn on public stats in the dashboard, then: [![LLM spend verified by TokenZero](${base}/v1/badge/${wsId}.svg)](${base}/dashboard?workspace=${wsId})`);
-  if (!a.flags["github-action"]) out(`  PR checks   ${selfCmd(base)} init --github-action`);
   if (!a.flags.mcp) out(`  coding agents: ${selfCmd(base)} init --mcp`);
+  if (!a.flags["agent-rules"]) out(`  agent rules:   ${selfCmd(base)} init --agent-rules   ${dim("(AGENTS.md block for Claude Code / Cursor / Codex)")}`);
 }
-var selfCmd = (_base) => "npx -y @tokenzero/cli";
-var redactKey = (s, key) => key ? s.replace(key, key.slice(0, 12) + "\u2026" + key.slice(-4)) : s;
-var GH_ACTION_YAML = `name: TokenZero LLM Cost Check
-on: [pull_request]
-permissions:
-  contents: read
-  pull-requests: write
-jobs:
-  cost-audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: tokenzero-ai/tokenzero/action@v0
-        with:
-          github-token: \${{ secrets.GITHUB_TOKEN }}
-`;
-async function setupGithubAction(root, a) {
-  out(`
-${bold("GitHub Action")} ${dim("(PR token-waste & model-arbitrage check)")}`);
-  const wfDir = path2.join(root, ".github", "workflows");
-  const file = path2.join(wfDir, "tokenzero.yml");
-  if (fs2.existsSync(file)) {
-    out(dim(`  ${path2.relative(root, file)} already exists`));
-    return;
-  }
-  if (await confirm(`  Add ${path2.relative(root, file)} to audit every PR?`, a)) {
-    fs2.mkdirSync(wfDir, { recursive: true });
-    fs2.writeFileSync(file, GH_ACTION_YAML);
-    out(green(`  \u2713 wrote ${path2.relative(root, file)}`));
-  }
-}
-async function setupMcp(root, base, a) {
-  out(`
-${bold("MCP")} ${dim("(audit_repo_token_waste, optimize_prompt_payload, calculate_model_arbitrage)")}`);
-  out(`  Claude Code:  claude mcp add --transport http tokenzero ${base}/mcp`);
-  out(`  Local stdio:  npx -y @tokenzero/mcp`);
-  for (const rel of [path2.join(".cursor", "mcp.json"), ".mcp.json"]) {
-    const file = path2.join(root, rel);
-    let cfg = {};
-    if (fs2.existsSync(file)) {
-      try {
-        cfg = JSON.parse(fs2.readFileSync(file, "utf8"));
-      } catch {
-        out(yellow(`  ! ${file} is not valid JSON; not touching it`));
-        continue;
-      }
-    }
-    if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) {
-      out(dim(`  ${rel}: already configured`));
-      continue;
-    }
-    if (await confirm(`  Add TokenZero to ${rel}?`, a)) {
-      cfg.mcpServers = { ...cfg.mcpServers ?? {}, tokenzero: { url: `${base}/mcp` } };
-      fs2.mkdirSync(path2.dirname(file), { recursive: true });
-      fs2.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-      out(green(`  \u2713 wrote ${rel}`));
-    }
-  }
-}
-var AGENT_RULES_MARKER = "<!-- tokenzero-agent-rules -->";
-function credsPath() {
-  return path2.join(process.env.TOKENZERO_CONFIG_DIR || path2.join(os.homedir(), ".config", "tokenzero"), "credentials.json");
-}
+var credsPath = () => path2.join(process.env.TOKENZERO_CONFIG_DIR || path2.join(os.homedir(), ".config", "tokenzero"), "credentials.json");
 function saveCreds(c2) {
   try {
     const p = credsPath();
@@ -966,28 +945,6 @@ function loadCreds() {
     return null;
   }
 }
-async function setupAgentRules(root, base, a) {
-  out(`
-${bold("Agent Rules")} ${dim("(AGENTS.md FinOps & MCP routing rules)")}`);
-  const file = path2.join(root, "AGENTS.md");
-  const existing = fs2.existsSync(file) ? fs2.readFileSync(file, "utf8") : "";
-  if (existing.includes(AGENT_RULES_MARKER)) {
-    out(dim("  AGENTS.md: already includes TokenZero FinOps rules"));
-    return;
-  }
-  const block = [
-    AGENT_RULES_MARKER,
-    "## TokenZero LLM FinOps & MCP Gateway",
-    `- **1-Line BYOK Gateway:** Point \`OPENAI_BASE_URL=${base}/v1\` and \`ANTHROPIC_BASE_URL=${base}\` (with \`X-TokenZero-Key\` or \`/w/<key>/v1\`). Provider keys pass straight through and are never stored.`,
-    `- **MCP Tools:** Run \`npx -y @tokenzero/mcp\` or connect HTTP MCP at \`${base}/mcp\` for \`audit_repo_token_waste\`, \`calculate_model_arbitrage\`, \`optimize_prompt_payload\`, and \`provision_workspace\`.`,
-    `- **Local Audit:** Run \`npx -y @tokenzero/cli audit\` before opening PRs that add or modify LLM calls.`
-  ].join("\n") + "\n";
-  if (await confirm("  Add TokenZero FinOps & MCP rules to AGENTS.md?", a)) {
-    const sep = existing && !existing.endsWith("\n") ? "\n\n" : existing ? "\n" : "";
-    fs2.writeFileSync(file, existing + sep + block);
-    out(green("  \u2713 wrote AGENTS.md"));
-  }
-}
 async function cmdSignup(a) {
   const base = baseUrl(a);
   if (!base) {
@@ -995,54 +952,148 @@ async function cmdSignup(a) {
     process.exitCode = 2;
     return;
   }
-  const name = a.flags.name || path2.basename(process.cwd()) || "cli-signup";
+  const name = a.flags.name || path2.basename(process.cwd()) || "cli";
   const r = await api(base, "/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) });
-  if (r.status !== 201 && r.status !== 200) {
+  if (r.status !== 201) {
     err(red(`signup failed (${r.status}): ${JSON.stringify(r.body).slice(0, 200)}`));
     process.exitCode = 1;
     return;
   }
-  const wsId = r.body.workspace?.id ?? r.body.workspace_id ?? r.body.id;
-  const key = r.body.key ?? r.body.api_key;
+  const wsId = r.body.workspace.id, key = r.body.key;
   saveCreds({ workspace_id: wsId, api_key: key, url: base });
   const payload = {
     workspace_id: wsId,
     api_key: key,
+    url: base,
     dashboard_url: `${base}/dashboard?workspace=${wsId}`,
     one_click_dashboard_url: `${base}/dashboard?workspace=${wsId}#key=${key}`,
     openai_base_url: `${base}/w/${key}/v1`,
     anthropic_base_url: `${base}/w/${key}`,
+    gemini_native_base_url: `${base}/w/${key}`,
     mcp_url: `${base}/mcp`,
-    badge_svg_url: `${base}/v1/badge/${wsId}.svg`
+    badge_svg_url: `${base}/v1/badge/${wsId}.svg`,
+    credentials_file: credsPath()
   };
   if (a.flags.json) {
     out(JSON.stringify(payload, null, 2));
     return;
   }
-  out(`${bold("TokenZero Workspace Provisioned (0-Click / No Form)")}`);
-  out(`  workspace_id     ${cyan(wsId)}`);
-  out(`  api_key          ${green(key)}`);
-  out(`  1-click dash     ${cyan(payload.one_click_dashboard_url)}`);
-  out(`  OPENAI_BASE_URL  ${payload.openai_base_url}`);
-  out(`  ANTHROPIC_BASE_URL ${payload.anthropic_base_url}`);
-  out(dim(`  Saved credentials to ${credsPath()}`));
+  out(`${bold("Workspace")} ${wsId} ${dim("created \xB7 key shown once")}`);
+  out(`  TOKENZERO_KEY        ${key}`);
+  out(`  OPENAI_BASE_URL      ${payload.openai_base_url}`);
+  out(`  ANTHROPIC_BASE_URL   ${payload.anthropic_base_url}`);
+  out(`  dashboard            ${payload.one_click_dashboard_url}   ${dim("(the #key= part never leaves your browser)")}`);
+  out(dim(`  saved to ${credsPath()} (0600); \`${selfCmd(base)} init\` writes the .env lines for a project`));
 }
 async function cmdDashboard(a) {
   const saved = loadCreds();
-  const base = baseUrl(a) || saved?.url || "https://tokenzero.sh";
+  const base = baseUrl(a) || saved?.url || "";
   const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key || "";
-  const wsId = saved?.workspace_id || "";
-  if (!key && !wsId) {
-    err(red("No saved workspace credentials. Run `npx -y @tokenzero/cli signup` or `tokenzero init` first."));
+  if (!base || !key) {
+    err(red("No workspace key: run `" + selfCmd(base) + " signup` or `init` first, or pass --url and --key."));
     process.exitCode = 2;
     return;
   }
-  const url = `${base}/dashboard${wsId ? "?workspace=" + wsId : ""}${key ? "#key=" + key : ""}`;
+  let wsId = saved?.api_key === key ? saved?.workspace_id ?? "" : "";
+  if (!wsId) {
+    const r = await api(base, "/v1/workspaces/me", { headers: { "x-tokenzero-key": key } });
+    if (r.status === 200) wsId = r.body.id;
+  }
+  if (!wsId) {
+    err(red("That key does not unlock a workspace at " + base));
+    process.exitCode = 1;
+    return;
+  }
+  const url = `${base}/dashboard?workspace=${wsId}#key=${key}`;
   if (a.flags.json) {
-    out(JSON.stringify({ workspace_id: wsId || null, dashboard_url: url }, null, 2));
+    out(JSON.stringify({ workspace_id: wsId, dashboard_url: url }, null, 2));
     return;
   }
   out(url);
+}
+var AGENT_RULES_MARKER = "<!-- tokenzero-agent-rules -->";
+async function setupAgentRules(root, base, a) {
+  out(`
+${bold("Agent rules")} ${dim("(AGENTS.md: read by Claude Code, Cursor, Codex, Windsurf)")}`);
+  const file = path2.join(root, "AGENTS.md");
+  const existing = fs2.existsSync(file) ? fs2.readFileSync(file, "utf8") : "";
+  if (existing.includes(AGENT_RULES_MARKER)) {
+    out(dim("  AGENTS.md already has the TokenZero section"));
+    return;
+  }
+  const block = [
+    AGENT_RULES_MARKER,
+    "## LLM cost (TokenZero)",
+    `- LLM calls go through the TokenZero gateway: \`OPENAI_BASE_URL=${base}/w/<key>/v1\`, \`ANTHROPIC_BASE_URL=${base}/w/<key>\` (or send \`X-TokenZero-Key\`). Provider keys pass through untouched; never commit them.`,
+    `- Before opening a PR that adds or changes an LLM call, run \`npx -y @tokenzero/cli audit\` (local, nothing uploaded) and fix medium/high findings: cache the static prefix, use the cheaper sibling for extraction/classification, batch calls in loops.`,
+    `- Model choices: prefer ids the audit prices; retiring ids are flagged with their replacement. Price alternatives with the MCP tool \`calculate_model_arbitrage\` (\`npx -y @tokenzero/mcp\` or ${base}/mcp).`,
+    `- Savings are verified: every routed request has a signed receipt (\`npx -y @tokenzero/cli verify <request_id>\`).`
+  ].join("\n") + "\n";
+  if (!await confirm("  Add the TokenZero section to AGENTS.md?", a)) return;
+  fs2.writeFileSync(file, existing + (existing && !existing.endsWith("\n") ? "\n\n" : existing ? "\n" : "") + block);
+  out(green(`  \u2713 wrote ${path2.relative(root, file)}`));
+}
+var selfCmd = (_base) => "npx -y @tokenzero/cli";
+var WORKFLOW = `name: TokenZero cost check
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  cost-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tokenzero-ai/tokenzero/action@v0
+        # with:
+        #   fail-over: 30          # fail the check above 30% estimated recoverable waste
+        #   comment-on-clean: true # also comment when the changes have no findings
+`;
+async function setupGithubAction(root, a) {
+  const file = path2.join(root, ".github", "workflows", "tokenzero.yml");
+  const rel = path2.relative(root, file);
+  out(`
+${bold("GitHub Action")} ${dim("(audits each PR on your runner; one comment kept up to date; no account, nothing uploaded)")}`);
+  if (fs2.existsSync(file)) {
+    out(dim(`  ${rel} already exists; left unchanged`));
+    return;
+  }
+  if (!await confirm(`  Write ${rel}?`, a)) {
+    out(dim("  skipped (--github-action to add later, --no-github-action to stop asking)"));
+    return;
+  }
+  fs2.mkdirSync(path2.dirname(file), { recursive: true });
+  fs2.writeFileSync(file, WORKFLOW);
+  out(green(`  \u2713 wrote ${rel}`));
+}
+var redactKey = (s, key) => key ? s.replace(key, key.slice(0, 12) + "\u2026" + key.slice(-4)) : s;
+async function setupMcp(root, base, a) {
+  out(`
+${bold("MCP")} ${dim("(audit_repo_token_waste, optimize_prompt_payload, calculate_model_arbitrage)")}`);
+  out(`  Claude Code (hosted):  claude mcp add --transport http tokenzero ${base}/mcp`);
+  out(`  Claude Code (local):   claude mcp add tokenzero -- npx -y @tokenzero/mcp`);
+  for (const [label, file] of [["Claude Code", path2.join(root, ".mcp.json")], ["Cursor", path2.join(root, ".cursor", "mcp.json")]]) {
+    let cfg = {};
+    if (fs2.existsSync(file)) {
+      try {
+        cfg = JSON.parse(fs2.readFileSync(file, "utf8"));
+      } catch {
+        out(yellow(`  ! ${path2.relative(root, file)} is not valid JSON; not touching it`));
+        continue;
+      }
+    }
+    if (cfg?.mcpServers?.tokenzero?.url === `${base}/mcp`) {
+      out(dim(`  ${label}: already configured`));
+      continue;
+    }
+    if (!await confirm(`  Add TokenZero to ${path2.relative(root, file)} for ${label}?`, a)) continue;
+    cfg.mcpServers = { ...cfg.mcpServers ?? {}, tokenzero: label === "Claude Code" ? { type: "http", url: `${base}/mcp` } : { url: `${base}/mcp` } };
+    fs2.mkdirSync(path2.dirname(file), { recursive: true });
+    fs2.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+    out(green(`  \u2713 wrote ${path2.relative(root, file)}`));
+  }
 }
 async function cmdAudit(a) {
   const root = path2.resolve(a._[1] ?? ".");
@@ -1068,8 +1119,9 @@ ${bold(f.title)}
   }
 }
 async function cmdUsage(a) {
-  const base = baseUrl(a);
-  const key = a.flags.key || process.env.TOKENZERO_KEY;
+  const saved = loadCreds();
+  const base = baseUrl(a) || saved?.url || "";
+  const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key;
   if (!base || !key) {
     err(red("Need TOKENZERO_URL and TOKENZERO_KEY (run tokenzero init), or --url and --key."));
     process.exitCode = 2;
@@ -1159,12 +1211,11 @@ async function cmdVerify(a) {
 function help() {
   out(`${bold("tokenzero")} v${VERSION} \u2014 cut your LLM bill with a BYOK gateway
 
-  ${bold("tokenzero signup")} [--name NAME] [--json]
-      Instant 1-command workspace & API key provisioning (no form, saves to ~/.config/tokenzero).
-  ${bold("tokenzero dashboard")} [--json]
-      Print your 1-click auto-unlock dashboard URL (#key= fragment, never sent in HTTP headers).
-  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--github-action] [--agent-rules]
+  ${bold("tokenzero signup")} [--name NAME] [--json]  One command, no form: workspace + key, saved to ~/.config/tokenzero (0600).
+  ${bold("tokenzero dashboard")} [--json]        One-click dashboard link for the saved key (key travels in the URL fragment only).
+  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--agent-rules] [--github-action | --no-github-action]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
+      Git repositories are offered the PR cost-check workflow; --mcp writes .mcp.json and .cursor/mcp.json; --agent-rules adds an AGENTS.md section.
   ${bold("tokenzero audit")} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold("tokenzero usage")} [--json]          Routed spend vs the free tier, savings, fee preview.
@@ -1182,12 +1233,12 @@ async function main() {
   const cmd = a._[0];
   if (a.flags.version || cmd === "version") return out(VERSION);
   switch (cmd) {
+    case "init":
+      return cmdInit(a);
     case "signup":
       return cmdSignup(a);
     case "dashboard":
       return cmdDashboard(a);
-    case "init":
-      return cmdInit(a);
     case "audit":
       return cmdAudit(a);
     case "usage":

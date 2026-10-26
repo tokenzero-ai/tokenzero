@@ -19,6 +19,6 @@ export function modelArbitrage(args: ArbitrageArgs) {
   return {
     pricing_version: PRICING_VERSION, requested: rows[0],
     alternatives: rows.slice(1).map(r => ({ ...r, savings_pct_vs_requested: Math.round((1 - r.per_request_usd / rows[0].per_request_usd) * 1000) / 10 })),
-    caveat: 'List prices. Cheaper models need an eval before swapping; TokenZero cascade routing is opt-in and reports observed parity.',
+    caveat: 'List prices. Cheaper models need an eval before swapping; TokenZero cascade routing is opt-in and advisory by default; an opt-in shadow parity monitor is coming.',
   };
 }

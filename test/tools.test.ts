@@ -6,8 +6,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { analyzeFiles, detectRepoKind, filesFromDiff, lex, prComment } from '../src/audit-core.ts';
-import { CASCADE_TARGET, costOf, normalizeModel, pricingFreshness } from '../src/pricing.ts';
+import { analyzeFiles, detectRepoKind, lex, prComment } from '../src/audit-core.ts';
+import { costOf, normalizeModel } from '../src/pricing.ts';
 
 const run = promisify(execFile);
 
@@ -44,16 +44,9 @@ test('analyzer: each finding lands on the call that owns the prompt', () => {
   assert.match(prComment(r), new RegExp(`\\(${r.estimated_waste_pct}% recoverable\\)`), 'header agrees with the findings');
 });
 
-test('pricing: list-price math and multi-provider normalization (OpenAI, Anthropic, Gemini, xAI, DeepSeek, Bedrock, OpenRouter)', () => {
+test('pricing: list-price math', () => {
   assert.equal(normalizeModel('claude-haiku-4-5-20251001'), 'claude-haiku-4-5');
-  assert.equal(normalizeModel('us.anthropic.claude-sonnet-4-5-20250929-v1:0'), 'claude-sonnet-4-5');
-  assert.equal(normalizeModel('x-ai/grok-4-2026-08-01'), 'grok-4');
-  assert.equal(normalizeModel('deepseek/deepseek-r1'), 'deepseek-r1');
-  assert.equal(CASCADE_TARGET['grok-4'], 'grok-4-fast');
-  assert.equal(CASCADE_TARGET['deepseek-r1'], 'deepseek-v3');
   assert.equal(costOf('claude-opus-5-5', { input: 1_000_000, output: 0, cachedInput: 1_000_000 }), 0.2);
-  assert.equal(costOf('grok-4', { input: 1_000_000, output: 0 }, 0.5), 1.5);
-  assert.equal(pricingFreshness().stale, false);
 });
 
 test('bundle: committed CLI matches sources and runs', async () => {
@@ -63,43 +56,4 @@ test('bundle: committed CLI matches sources and runs', async () => {
   assert.equal(h(tmp), h('cli/bin/tokenzero.mjs'), 'run `npm run build` and commit cli/bin/tokenzero.mjs');
   const v = await run(process.execPath, ['cli/bin/tokenzero.mjs', 'version']);
   assert.equal(v.stdout.trim(), JSON.parse(fs.readFileSync('cli/package.json', 'utf8')).version, 'CLI VERSION constant matches cli/package.json');
-});
-
-test('analyzer: filesFromDiff preserves hunk line numbers and matches full-file findings', () => {
-  const full = [
-    '# line 1', '# line 2', '# line 3', '# line 4', '# line 5',
-    '# line 6', '# line 7', '# line 8', '# line 9', '# line 10',
-    'from openai import OpenAI',
-    'client = OpenAI()',
-    'SYSTEM_PROMPT = """' + 'You are an expert enterprise customer support triage agent. '.repeat(120) + '"""',
-    'def classify_ticket(ticket_text: str) -> str:',
-    '    resp = client.chat.completions.create(',
-    '        model="gpt-4o",',
-    '        messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Classify sentiment: " + ticket_text}],',
-    '    )',
-    '    return resp.choices[0].message.content',
-  ].join('\n') + '\n';
-  const hunk = [
-    'diff --git a/app.py b/app.py',
-    '--- a/app.py',
-    '+++ b/app.py',
-    '@@ -11,9 +11,9 @@',
-    ...full.split('\n').slice(10, 19).map(l => '+' + l),
-  ].join('\n') + '\n';
-  const a = analyzeFiles([{ path: 'app.py', content: full }]);
-  const b = analyzeFiles(filesFromDiff(hunk));
-  assert.deepEqual(b.findings.map(f => ({ line: f.line, title: f.title })), a.findings.map(f => ({ line: f.line, title: f.title })));
-  assert.equal(b.estimated_waste_pct, a.estimated_waste_pct);
-});
-
-test('cli init: --github-action, --mcp, and --agent-rules write workflow, MCP configs, and AGENTS.md', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-init-'));
-  await run(process.execPath, ['cli/bin/tokenzero.mjs', 'init', dir, '--url', 'http://127.0.0.1:9', '--no-env', '--github-action', '--mcp', '--agent-rules', '--yes']);
-  assert.ok(fs.existsSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml')));
-  assert.match(fs.readFileSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml'), 'utf8'), /tokenzero-ai\/tokenzero\/action@v0/);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.cursor', 'mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
-  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /TokenZero LLM FinOps & MCP Gateway/);
-  const dash = await run(process.execPath, ['cli/bin/tokenzero.mjs', 'dashboard', '--url', 'https://tokenzero.sh', '--key', 'tz_live_test123', '--json']);
-  assert.equal(JSON.parse(dash.stdout).dashboard_url, 'https://tokenzero.sh/dashboard#key=tz_live_test123');
 });

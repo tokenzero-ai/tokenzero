@@ -12,7 +12,17 @@ function encoder(): Tiktoken {
   return enc;
 }
 
-const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, xai: 1.02, deepseek: 1.04, openrouter: 1.05 };
+const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, openrouter: 1.05, xai: 1.05, deepseek: 1.05 };
+// Claude 4.7 and later (and Mythos) use a tokenizer that yields ~30% more tokens than
+// the earlier Claude tokenizer for the same text. Estimates feed the simulator, the
+// audit and the cache-minimum checks; receipts always use provider-reported usage.
+const CLAUDE_OLD_TOKENIZER = /^claude-(3|4-[0-6]|opus-4-[0-6]|sonnet-4-[0-6]|haiku-4-5|haiku-3)/;
+export function tokenFactor(provider: Provider, model?: unknown): number {
+  const base = PROVIDER_FACTOR[provider];
+  if (provider !== 'anthropic') return base;
+  const m = String(model ?? '').toLowerCase().replace(/^anthropic\//, '');
+  return CLAUDE_OLD_TOKENIZER.test(m) ? base : base * 1.3;
+}
 
 // System prompts and tool schemas repeat on nearly every request, and BPE encoding
 // dominated the gateway's CPU profile. Memoize raw counts for longer texts (LRU).
@@ -28,9 +38,9 @@ function rawCount(text: string): number {
   return n;
 }
 
-export function countTokens(text: string, provider: Provider = 'openai'): number {
+export function countTokens(text: string, provider: Provider = 'openai', model?: unknown): number {
   if (!text) return 0;
-  return Math.ceil(rawCount(text) * PROVIDER_FACTOR[provider]);
+  return Math.ceil(rawCount(text) * tokenFactor(provider, model));
 }
 
 /** Flatten any OpenAI/Anthropic content value (string | block[]) to text for counting. */
@@ -45,6 +55,10 @@ export function contentToText(c: unknown): string {
       if (b.type === 'tool_use' || b.type === 'function_call') return JSON.stringify(b.input ?? b.arguments ?? '');
       if (b.type === 'tool_result' || b.type === 'function_call_output') return contentToText(b.content ?? b.output);
       if (b.type === 'document') return '\u0000'.repeat(4000);
+      // Gemini parts
+      if (b.inlineData || b.inline_data || b.fileData || b.file_data) return '\u0000'.repeat(1600);
+      if (b.functionCall) return JSON.stringify(b.functionCall.args ?? '');
+      if (b.functionResponse) return JSON.stringify(b.functionResponse.response ?? '');
       return JSON.stringify(b);
     }).join('\n');
   }
@@ -69,7 +83,7 @@ export interface PromptProfile {
 /** Profile an OpenAI Chat, OpenAI Responses or Anthropic Messages request body. */
 export function profilePrompt(body: any, provider: Provider): PromptProfile {
   let system = 0, tools = 0, history = 0, lastUser = 0, turns = 0;
-  const c = (t: unknown) => countTokens(contentToText(t), provider);
+  const c = (t: unknown) => countTokens(contentToText(t), provider, body?.model);
 
   if (body.system) system += c(body.system);
   if (typeof body.instructions === 'string') system += c(body.instructions);

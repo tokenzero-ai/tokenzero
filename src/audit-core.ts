@@ -8,7 +8,7 @@
 // Everything is heuristic and says so; the gateway's ledger is where numbers
 // become verified.
 import crypto from 'node:crypto';
-import { priceFor, normalizeModel, CASCADE_TARGET, costOf, PRICES } from './pricing.ts';
+import { priceFor, normalizeModel, CASCADE_TARGET, costOf, PRICES, modelSunset } from './pricing.ts';
 import { countTokens } from './tokens.ts';
 
 export interface SourceFile { path: string; content: string; }
@@ -40,7 +40,7 @@ export interface AuditReport {
   generated_at: string;
 }
 
-const MODEL_RE = /["'`](?:openai\/|anthropic\/|google\/|models\/)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+))["'`]/g;
+const MODEL_RE = /["'`](?:(?:openai|anthropic|google|models|x-ai|xai|deepseek|bedrock|openrouter)\/|(?:us|eu|apac|global)\.anthropic\.|anthropic\.)?((?:gpt-[\w.-]+|o[134](?:-mini|-pro)?(?:-[\w-]+)?|claude-[\w.-]+|gemini-[\w.-]+|grok-[\w.-]+|deepseek-[\w.-]+)(?::\d+)?)["'`]/g;
 const CALL_RE: [RegExp, string][] = [
   [/\.chat\.completions\.(create|parse)\s*\(/, 'openai-chat'],
   [/\.responses\.(create|parse|stream)\s*\(/, 'openai-responses'],
@@ -116,6 +116,7 @@ function promptLike(t: string): boolean {
 }
 
 /** Instruction phrasing that marks an extraction/classification-shaped task. Read only from prompt text. */
+/** Tasks whose INPUTS tend to repeat (labels over a finite set); extraction/translation/summaries of unique documents do not. */
 const REPEAT_TASK = /\b(classify|classification|categori[sz]e|sentiment|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 const SIMPLE_TASK = /\b(classify|classification|categori[sz]e|sentiment|extract (the|all|every|any)|return (only |just )?(valid |a )?json|respond (only )?(with|in) (valid )?json|output (only )?(valid )?json|translate (this|the following|into)|summari[sz]e (this|the following|in \d+)|label (this|the|each)|is (this|it) spam|yes or no|true or false)\b/i;
 
@@ -230,6 +231,8 @@ function resolveScopes(loc: ReturnType<typeof makeLocator>, masked: string[], fr
   return out;
 }
 
+/** Audits are dated by wall clock so sunset findings age correctly; tests pin it. */
+export const AUDIT_AT = new Date(process.env.TOKENZERO_AUDIT_AT || Date.now());
 export function analyzeFiles(files: SourceFile[], repo: string | null = null, manifests: SourceFile[] = []): AuditReport {
   const findings: Finding[] = [];
   const callSites: CallSite[] = [];
@@ -281,6 +284,7 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       // Prompt text and model attributed to THIS call (see "call attribution" above).
       const refs = resolveScopes(loc, masked, scope);
       if (sdk.startsWith('langchain')) {
+        // `llm = ChatOpenAI(...)` then `llm.invoke(prompt)`: the prompt lives at the invocation sites.
         const assigned = /^\s*(?:const|let|var|self\.|this\.)?\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=/.exec(masked[i])?.[1];
         if (assigned) for (let l = 0; l < masked.length; l++) {
           const inv = new RegExp(`\\b${assigned}\\.(invoke|ainvoke|stream|astream|batch|abatch|call|predict|generate)\\s*\\(`).exec(masked[l]);
@@ -389,6 +393,15 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
         });
       }
 
+      // 6b. Models with an announced retirement: once per id per report. Retired ids fail at the provider.
+      const sunset = model && key ? modelSunset(key, AUDIT_AT) : null;
+      if (sunset && !unknownModels.has('sunset:' + key)) {
+        unknownModels.add('sunset:' + key);
+        push({ severity: sunset.retired ? 'high' : sunset.days_left <= 90 ? 'medium' : 'low', file: f.path, line: i + 1,
+          title: sunset.retired ? `Retired model "${model}"` : `"${model}" retires on ${sunset.retires}`,
+          detail: sunset.retired ? `The provider shut this model down on ${sunset.retires}; requests fail or are remapped. Recommended replacement: ${sunset.replacement}.` : `The provider announced on ${sunset.announced} that this model retires on ${sunset.retires} (${sunset.days_left} days). Recommended replacement: ${sunset.replacement}.`,
+          fix: `Move to ${sunset.replacement} (eval first); TokenZero's cascade can route to it, and the gateway warns in X-TokenZero-Warning until you do.`, est_savings_pct: 0 });
+      }
       // 6. Unpriced or retired model ids: once per id per report.
       if (model && !key && !unknownModels.has(model)) {
         unknownModels.add(model);
@@ -445,23 +458,24 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
   return { id, repo, method: 'static heuristics', repo_kind: kind, notes, scanned_files: sources.length, call_sites: callSites, models, findings, estimated_waste_pct: wastePct, cost_per_10k_runs: cost, badge_url: null, generated_at: new Date().toISOString() };
 }
 
-/** Turn a unified diff into per-file "added lines" sources so the analyzer only sees what the PR introduces. */
+/**
+ * Turn a unified diff into per-file sources holding only the lines the PR introduces
+ * (plus context), laid out at their real line numbers: each hunk is placed at the
+ * line its header declares, so a finding at app.py:20 in diff mode is app.py:20 in
+ * the file. Removed lines are dropped.
+ */
 export function filesFromDiff(diff: string): SourceFile[] {
   const files: SourceFile[] = [];
   let cur: SourceFile | null = null;
-  let lineNo = 0;
+  let lineNo = 0; // lines emitted so far for `cur`
   for (const line of diff.split('\n')) {
     const m = /^\+\+\+ b\/(.+)$/.exec(line);
     if (m) { cur = { path: m[1], content: '' }; files.push(cur); lineNo = 0; continue; }
     if (!cur) continue;
     const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (h) {
-      const start = Number(h[1]);
-      while (lineNo < start - 1) { cur.content += '\n'; lineNo++; }
-      continue;
-    }
+    if (h) { const start = Number(h[1]); while (lineNo < start - 1) { cur.content += '\n'; lineNo++; } continue; }
     if (line.startsWith('+') && !line.startsWith('+++')) { cur.content += line.slice(1) + '\n'; lineNo++; }
-    else if (line.startsWith(' ')) { cur.content += line.slice(1) + '\n'; lineNo++; }
+    else if (line.startsWith(' ')) { cur.content += line.slice(1) + '\n'; lineNo++; }   // context lines keep surrounding structure
     else if (line === '\\ No newline at end of file') continue;
   }
   return files;

@@ -13,14 +13,18 @@ import { analyzeFiles, filesFromDiff } from '../../src/audit-core.ts';
 import { fetchRepoFiles } from '../../src/github-fetch.ts';
 import { modelArbitrage } from '../../src/arbitrage.ts';
 import { PRICING_VERSION } from '../../src/pricing.ts';
+import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
 const BAKED_URL = typeof __TOKENZERO_BAKED__ === 'string' ? __TOKENZERO_BAKED__ : '__TOKENZERO_DEFAULT_URL__';
-const SUPPORTED = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'];
+const SUPPORTED = [...MCP_LEGACY_VERSIONS];
+const SERVER = { name: 'tokenzero', version: VERSION };
+const CAPABILITIES = { tools: { listChanged: false } };
+const INSTRUCTIONS = 'Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.';
 const serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith('http') ? BAKED_URL : '')).replace(/\/+$/, '');
 
 const TOOLS = [
@@ -41,8 +45,8 @@ const TOOLS = [
   },
   {
     name: 'provision_workspace',
-    description: 'Zero-click autonomous workspace and API key provisioning on TokenZero (POST /v1/workspaces). Returns a live tz_live_... API key, workspace_id, 1-click auto-unlock dashboard URL, gateway base URLs, and badge SVG URL with zero signup form required.',
-    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Optional workspace name (defaults to mcp-agent)' } }, additionalProperties: false },
+    description: 'Create a TokenZero workspace and key with no form (POST /v1/workspaces on the TokenZero service). Returns the key once, the base URLs that route through it, the one-click dashboard link (key in the URL fragment, never sent to the server) and the badge URL. Free up to the monthly free tier; nothing is billed.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'workspace name (defaults to "mcp-agent")' } }, additionalProperties: false },
   },
 ];
 
@@ -72,33 +76,17 @@ async function callTool(name: string, args: any): Promise<unknown> {
     }
     case 'provision_workspace': {
       const base = serviceUrl();
-      if (!base) throw new Error('set TOKENZERO_URL to use this tool');
-      const wsName = typeof args?.name === 'string' && args.name.trim() ? args.name.trim() : 'mcp-agent';
-      const r = await fetch(base + '/v1/workspaces', {
-        method: 'POST',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(15_000),
-        headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` },
-        body: JSON.stringify({ name: wsName }),
-      }).catch((e: any) => { throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`); });
+      if (!base) throw new Error('set TOKENZERO_URL to use this tool (workspaces live in the TokenZero service)');
+      const wsName = typeof args?.name === 'string' && args.name.trim() ? args.name.trim().slice(0, 64) : 'mcp-agent';
+      const r = await fetch(base + '/v1/workspaces', { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15_000), headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ name: wsName }) })
+        .catch((e: any) => { throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`); });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
       const j: any = await r.json();
-      if (r.status >= 400) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
-      const id = j.workspace?.id ?? j.workspace_id ?? j.id;
-      const key = j.key ?? j.api_key;
-      return {
-        workspace_id: id,
-        api_key: key,
-        name: wsName,
-        dashboard_url: `${base}/dashboard?workspace=${id}`,
-        one_click_dashboard_url: `${base}/dashboard?workspace=${id}#key=${key}`,
-        gateway_base_url: `${base}/v1`,
-        anthropic_base_url: base,
-        gemini_base_url: `${base}/gemini`,
-        zero_code_base_url: `${base}/w/${key}/v1`,
-        mcp_url: `${base}/mcp`,
-        badge_svg_url: `${base}/v1/badge/${id}.svg`,
-      };
+      if (r.status !== 201) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
+      const id: string = j.workspace.id, key: string = j.key;
+      return { workspace_id: id, name: wsName, api_key: key, url: base, openai_base_url: `${base}/w/${key}/v1`, anthropic_base_url: `${base}/w/${key}`, gemini_native_base_url: `${base}/w/${key}`,
+        dashboard_url: `${base}/dashboard?workspace=${id}`, one_click_dashboard_url: `${base}/dashboard?workspace=${id}#key=${key}`, mcp_url: `${base}/mcp`, badge_svg_url: `${base}/v1/badge/${id}.svg`,
+        note: 'Store the key where secrets live (env or a secrets manager), never in the repository. Free up to the monthly free tier; nothing is billed.' };
     }
     default: throw new Error(`unknown tool ${name}`);
   }
@@ -110,36 +98,40 @@ async function handle(m: any) {
   const isRequest = m && m.id !== undefined && m.id !== null && typeof m.method === 'string';
   const reply = (result: unknown) => isRequest && send({ jsonrpc: '2.0', id: m.id, result });
   const fail = (code: number, message: string) => isRequest && send({ jsonrpc: '2.0', id: m.id, error: { code, message } });
+  const failData = (code: number, message: string, data: unknown) => isRequest && send({ jsonrpc: '2.0', id: m.id, error: { code, message, data } });
+  const call = async () => {
+    try { const r = await callTool(m.params?.name, m.params?.arguments ?? {}); return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }], structuredContent: r, isError: false }; }
+    catch (e: any) { return { content: [{ type: 'text', text: `error: ${e?.message ?? e}` }], isError: true }; }
+  };
   try {
+    if (isModern(m)) {
+      // ---- 2026-07-28: no handshake; version and identity travel on every request ----
+      const v = requestedVersion(m)!;
+      if (!versionSupported(v)) { const e = unsupportedVersionError(v); return failData(e.code, e.message, e.data); }
+      switch (m.method) {
+        case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
+        case 'tools/list': return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case 'tools/call': return reply(modernResult(await call(), SERVER));
+        default:
+          if (typeof m.method === 'string' && m.method.startsWith('notifications/')) return;
+          return fail(RPC.methodNotFound, `method not found: ${m.method}`);
+      }
+    }
     switch (m?.method) {
       case 'initialize': {
         const want = m.params?.protocolVersion;
-        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'tokenzero', version: VERSION }, instructions: 'Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.' });
+        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
       }
-      case 'server/discover':
-        return reply({
-          resultType: 'complete',
-          supportedVersions: ['2026-07-28'],
-          capabilities: { tools: { listChanged: false } },
-          instructions: 'Use audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.',
-          ttlMs: 3_600_000,
-          cacheScope: 'public',
-          _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'tokenzero', version: VERSION } },
-        });
       case 'ping': return reply({});
+      // The stdio backward-compatibility probe: a dual-era client sends this first.
+      case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
       case 'tools/list': return reply({ tools: TOOLS });
-      case 'tools/call':
-        try {
-          const r = await callTool(m.params?.name, m.params?.arguments ?? {});
-          return reply({ content: [{ type: 'text', text: JSON.stringify(r, null, 2) }], structuredContent: r, isError: false });
-        } catch (e: any) {
-          return reply({ content: [{ type: 'text', text: `error: ${e?.message ?? e}` }], isError: true });
-        }
+      case 'tools/call': return reply(await call());
       default:
         if (typeof m?.method === 'string' && m.method.startsWith('notifications/')) return;
-        return fail(-32601, `method not found: ${m?.method}`);
+        return fail(RPC.methodNotFound, `method not found: ${m?.method}`);
     }
-  } catch (e: any) { fail(-32603, e?.message ?? 'internal error'); }
+  } catch (e: any) { fail(RPC.internal, e?.message ?? 'internal error'); }
 }
 
 const rl = readline.createInterface({ input: process.stdin, terminal: false });

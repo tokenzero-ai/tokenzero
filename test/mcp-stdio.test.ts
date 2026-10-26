@@ -43,7 +43,6 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
     { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'calculate_model_arbitrage', arguments: { model: 'gpt-6-astra', input_tokens: 3000, output_tokens: 300, static_tokens: 2000 } } },
     { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'optimize_prompt_payload', arguments: { body: { model: 'gpt-6.1-sol' } } } },
     { jsonrpc: '2.0', id: 6, method: 'nope' },
-    { jsonrpc: '2.0', id: 7, method: 'server/discover', params: {} },
   ], dir, { TOKENZERO_URL: 'http://127.0.0.1:9' }); // closed port: hermetic, whatever URL the bundle has baked in
   const by = (id: number) => res.find(r => r.id === id);
   assert.equal(by(1).result.protocolVersion, '2025-06-18');
@@ -56,7 +55,40 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
   assert.equal(by(5).result.isError, true, 'unreachable service → clear tool error, not a crash');
   assert.match(by(5).result.content[0].text, /could not reach the TokenZero service at http:\/\/127\.0\.0\.1:9 .*TOKENZERO_URL/);
   assert.equal(by(6).error.code, -32601);
-  assert.equal(by(7).result.resultType, 'complete');
-  assert.deepEqual(by(7).result.supportedVersions, ['2026-07-28']);
-  assert.equal(res.length, 7, 'no response to notifications');
+  assert.equal(res.length, 6, 'no response to notifications');
+});
+
+test('stdio MCP: 2026-07-28 clients (no handshake) and legacy clients are both served', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-mcp-'));
+  const meta = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 't', version: '1' }, 'io.modelcontextprotocol/clientCapabilities': {} };
+  const res = await session([
+    { jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'calculate_model_arbitrage', arguments: { model: 'gpt-6-astra', input_tokens: 1000, output_tokens: 100 }, _meta: meta } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/list', params: { _meta: { ...meta, 'io.modelcontextprotocol/protocolVersion': '1900-01-01' } } },
+    { jsonrpc: '2.0', id: 5, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'old', version: '1' } } },
+    { jsonrpc: '2.0', id: 6, method: 'ping', params: { _meta: meta } },
+  ], dir, { TOKENZERO_URL: 'http://127.0.0.1:9' });
+  const by = (id: number) => res.find(r => r.id === id);
+  assert.equal(by(1).result.resultType, 'complete');
+  assert.deepEqual(by(1).result.supportedVersions, ['2026-07-28']);
+  assert.equal(by(1).result._meta['io.modelcontextprotocol/serverInfo'].name, 'tokenzero');
+  assert.equal(by(1).result.cacheScope, 'public'); assert.ok(by(1).result.ttlMs > 0);
+  assert.equal(by(2).result.resultType, 'complete'); assert.equal(by(2).result.tools.length, 4); assert.ok(by(2).result.ttlMs > 0);
+  assert.equal(by(3).result.resultType, 'complete'); assert.equal(by(3).result.isError, false);
+  assert.equal(by(4).error.code, -32022, 'UnsupportedProtocolVersionError');
+  assert.deepEqual(by(4).error.data, { supported: ['2026-07-28'], requested: '1900-01-01' });
+  assert.equal(by(5).result.protocolVersion, '2025-11-25', 'legacy handshake still works');
+  assert.equal(by(6).error.code, -32601, 'ping was removed from the modern protocol');
+});
+
+test('stdio MCP: provision_workspace is listed and fails cleanly without a reachable service', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-mcp-'));
+  const res = await session([
+    { jsonrpc: '2.0', id: 1, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'provision_workspace', arguments: { name: 'x' }, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } },
+  ], dir, { TOKENZERO_URL: 'http://127.0.0.1:9' });
+  const by = (id: number) => res.find(r => r.id === id);
+  assert.ok(by(1).result.tools.some((t: any) => t.name === 'provision_workspace'));
+  assert.equal(by(2).result.isError, true); assert.match(by(2).result.content[0].text, /could not reach the TokenZero service/);
 });

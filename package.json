@@ -1,20 +1,17 @@
 {
   "name": "tokenzero-tools",
-  "version": "0.1.6",
+  "version": "0.1.0",
   "description": "TokenZero open tools: @tokenzero/cli, the @tokenzero/mcp server, and the static LLM token-waste analyzer behind both.",
   "type": "module",
   "private": true,
   "license": "Apache-2.0",
   "author": "TokenZero Contributors <support@tokenzero.sh>",
   "homepage": "https://tokenzero.sh",
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "scripts": {
     "build": "node cli/build.mjs && node mcp/build.mjs",
     "test": "node scripts/run-tests.mjs",
-    "typecheck": "tsc --noEmit",
-    "frontier-check": "node scripts/frontier-check.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "js-tiktoken": "1.0.21"

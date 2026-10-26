@@ -1,40 +1,31 @@
 #!/usr/bin/env node
-// Runs the TypeScript test suite across Node 20, 22, 24, and 26+.
-// On Node 22.6+ / 24+, native type-stripping runs .ts directly; on Node 20 or older Node 22,
-// esbuild transpiles test/*.test.ts into a temporary directory before invoking node --test.
-import { spawnSync } from 'node:child_process';
+// Portable test runner: `npm test` works on Node 20, 22, 24 and 26.
+//
+// The tests are TypeScript. Node 24+ runs them directly (type stripping). Older
+// Node has no TypeScript support, so there the tests are bundled to JavaScript
+// with esbuild (already a devDependency) into .test-dist/ and run from there.
+// Either way node:test gets an explicit file list, never a quoted glob (Node 20
+// does not expand those).
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { build } from 'esbuild';
+import { spawnSync } from 'node:child_process';
 
-const files = fs.readdirSync('test').filter(f => f.endsWith('.test.ts')).map(f => path.join('test', f));
+const root = process.cwd();
+const testDir = path.join(root, 'test');
+const files = fs.readdirSync(testDir).filter(f => f.endsWith('.test.ts')).sort().map(f => path.join(testDir, f));
+if (!files.length) { console.error('run-tests: no test/*.test.ts files'); process.exit(1); }
+
 const [major, minor] = process.versions.node.split('.').map(Number);
+const native = major >= 24 || (major === 22 && minor >= 18); // unflagged type stripping
 
-if (major >= 24 || (major === 22 && minor >= 6)) {
-  const flags = major >= 24 ? ['--no-warnings=ExperimentalWarning'] : ['--experimental-strip-types', '--no-warnings=ExperimentalWarning'];
-  const r = spawnSync(process.execPath, [...flags, '--test', ...files], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
+let target = files;
+if (!native) {
+  const esbuild = await import('esbuild');
+  const out = path.join(root, '.test-dist');
+  fs.rmSync(out, { recursive: true, force: true });
+  await esbuild.build({ entryPoints: files, outdir: out, bundle: true, platform: 'node', format: 'esm', target: `node${major}`, packages: 'external', sourcemap: 'inline', logLevel: 'warning', outExtension: { '.js': '.test.mjs' } });
+  target = fs.readdirSync(out).filter(f => f.endsWith('.test.mjs')).map(f => path.join(out, f));
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-test-'));
-try {
-  const outFiles = [];
-  for (const f of files) {
-    const out = path.join(tmp, path.basename(f, '.ts') + '.mjs');
-    await build({
-      entryPoints: [f],
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      target: 'node20',
-      outfile: out,
-      packages: 'bundle',
-    });
-    outFiles.push(out);
-  }
-  const r = spawnSync(process.execPath, ['--test', ...outFiles], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
-} finally {
-  fs.rmSync(tmp, { recursive: true, force: true });
-}
+const r = spawnSync(process.execPath, ['--no-warnings', '--test', ...target], { stdio: 'inherit', env: process.env });
+process.exit(r.status ?? 1);
