@@ -1,0 +1,58 @@
+# Publishes the TokenZero MCP server (sh.tokenzero/mcp, the name in mcp/server.json) to the official
+# MCP Registry (registry.modelcontextprotocol.io) when a GitHub release is published, or by hand.
+#
+# Authentication: HTTP domain verification for the sh.tokenzero/* namespace. The registry fetches
+# https://tokenzero.sh/.well-known/mcp-registry-auth and expects a signature from the matching
+# Ed25519 private key, stored in the MCP_PRIVATE_KEY repository secret. One registry name only:
+# GitHub OIDC is deliberately not used, since it can only authorise io.github.<owner>/* names.
+# The npm package (@tokenzero/mcp) is published separately; the registry checks that the version
+# in server.json exists on npm, so run this after the npm release.
+name: Publish to MCP Registry
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (defaults to the release tag without the leading v, or server.json)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher --version || true
+
+      - name: Prepare server.json
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION:-${TAG#v}}"
+          cp mcp/server.json server.json
+          if [ -n "$VERSION" ]; then
+            jq --arg v "$VERSION" '.version = $v | (.packages // []) |= map(.version = $v)' server.json > server.tmp && mv server.tmp server.json
+          fi
+          test "$(jq -r .name server.json)" = "sh.tokenzero/mcp"
+          echo "Publishing $(jq -r .name server.json) $(jq -r .version server.json) via HTTP domain verification"
+
+      - name: Authenticate (HTTP domain verification for sh.tokenzero)
+        run: ./mcp-publisher login http --domain tokenzero.sh --private-key "${{ secrets.MCP_PRIVATE_KEY }}"
+
+      - name: Publish to the MCP Registry
+        run: ./mcp-publisher publish
+
+      - name: Confirm listing
+        run: |
+          curl -sS "https://registry.modelcontextprotocol.io/v0.1/servers?search=sh.tokenzero%2Fmcp&version=latest" | head -c 2000; echo
