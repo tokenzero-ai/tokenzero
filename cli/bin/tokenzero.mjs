@@ -710,7 +710,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.7";
+var VERSION = "0.1.8";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -730,7 +730,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["url", "name", "key", "format", "diff", "fail-over", "env-file"]);
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["url", "name", "key", "format", "diff", "fail-over", "env-file", "limit"]);
 var tty = process.stdout.isTTY && !process.env.NO_COLOR;
 var c = (code2) => (s) => tty ? `\x1B[${code2}m${s}\x1B[0m` : s;
 var bold = c("1");
@@ -1183,8 +1183,9 @@ async function cmdRotate(a) {
 async function cmdVerify(a) {
   const base = baseUrl(a);
   const id = a._[1];
+  if (base && a.flags.chain) return cmdVerifyChain(a, base);
   if (!base || !id) {
-    err(red("usage: tokenzero verify <request_id> [--url \u2026]"));
+    err(red("usage: tokenzero verify <request_id> [--url \u2026]  |  tokenzero verify --chain [--limit N]"));
     process.exitCode = 2;
     return;
   }
@@ -1208,6 +1209,55 @@ async function cmdVerify(a) {
   out(`  baseline $${rc.baseline_usd} \xB7 actual $${rc.actual_usd} \xB7 saved $${rc.savings_usd} \xB7 engines ${rc.engines.join(",") || "none"} \xB7 pricing ${rc.pricing_version}`);
   if (!ok) process.exitCode = 1;
 }
+async function cmdVerifyChain(a, base) {
+  const saved = loadCreds();
+  const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key || "";
+  if (!key) {
+    err(red("--chain needs the workspace key (TOKENZERO_KEY, --key, or saved credentials)"));
+    process.exitCode = 2;
+    return;
+  }
+  const limit = Number(a.flags.limit) || 50;
+  const [c2, k] = await Promise.all([api(base, `/v1/ledger/chain?limit=${limit}`, { headers: { "x-tokenzero-key": key } }), api(base, "/.well-known/tokenzero.json")]);
+  if (c2.status !== 200) {
+    err(red(`chain: ${c2.status} ${JSON.stringify(c2.body).slice(0, 200)}`));
+    process.exitCode = 1;
+    return;
+  }
+  const items = c2.body.items ?? [];
+  const keys = /* @__PURE__ */ new Map();
+  for (const jwk of k.body?.keys ?? []) keys.set(jwk.kid, crypto2.createPublicKey({ key: { kty: jwk.kty, crv: jwk.crv, x: jwk.x }, format: "jwk" }));
+  const sha = (s) => crypto2.createHash("sha256").update(s).digest("hex");
+  let ok = true, reason = "";
+  for (let i = 0; i < items.length && ok; i++) {
+    const { receipt, signature } = items[i];
+    const pub = keys.get(receipt.key_id);
+    if (!pub || !crypto2.verify(null, Buffer.from(canonical(receipt)), pub, Buffer.from(signature, "base64url"))) {
+      ok = false;
+      reason = `bad signature at seq ${receipt.seq}`;
+      break;
+    }
+    const prev = items[i - 1];
+    if (prev && receipt.seq !== prev.receipt.seq + 1) {
+      ok = false;
+      reason = `seq ${receipt.seq} does not follow ${prev.receipt.seq}`;
+    } else if (prev && receipt.prev_receipt_hash !== sha(prev.signature)) {
+      ok = false;
+      reason = `prev_receipt_hash mismatch at seq ${receipt.seq}`;
+    } else if (!prev && receipt.seq === 1 && receipt.prev_receipt_hash !== "0".repeat(64)) {
+      ok = false;
+      reason = "genesis receipt does not point at the zero hash";
+    }
+  }
+  if (a.flags.json) {
+    out(JSON.stringify({ valid: ok, reason: reason || null, checked: items.length, head_seq: c2.body.head_seq, server_verification: c2.body.verification }, null, 2));
+    if (!ok) process.exitCode = 1;
+    return;
+  }
+  out(`${ok ? green("\u2713 chain intact") : red("\u2717 CHAIN BROKEN")}: ${items.length} receipt(s) checked locally${c2.body.head_seq != null ? `, head seq ${c2.body.head_seq}` : ""}${reason ? " \u2014 " + reason : ""}`);
+  if (items.length) out(dim(`  ${items[0].receipt.seq ?? "?"} \u2026 ${items.at(-1).receipt.seq ?? "?"} \xB7 savings in this run $${items.reduce((s, x) => s + (x.receipt.savings_usd ?? 0), 0).toFixed(4)} \xB7 key ${items[0].receipt.key_id}`));
+  if (!ok) process.exitCode = 1;
+}
 function help() {
   out(`${bold("tokenzero")} v${VERSION} \u2014 cut your LLM bill with a BYOK gateway
 
@@ -1220,6 +1270,7 @@ function help() {
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold("tokenzero usage")} [--json]          Routed spend vs the free tier, savings, fee preview.
   ${bold("tokenzero verify")} <request_id>     Verify a savings receipt's signature offline.
+  ${bold("tokenzero verify --chain")} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold("tokenzero rotate-key")} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
 
   Env: TOKENZERO_URL, TOKENZERO_KEY, NO_COLOR`);

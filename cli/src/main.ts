@@ -15,7 +15,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.1.7';
+const VERSION = '0.1.8';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -39,7 +39,7 @@ function parseArgs(argv: string[]): Args {
   }
   return a;
 }
-const VALUE_FLAGS = new Set(['url', 'name', 'key', 'format', 'diff', 'fail-over', 'env-file']);
+const VALUE_FLAGS = new Set(['url', 'name', 'key', 'format', 'diff', 'fail-over', 'env-file', 'limit']);
 
 // ---- output -----------------------------------------------------------------
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -392,7 +392,8 @@ async function cmdRotate(a: Args) {
 
 async function cmdVerify(a: Args) {
   const base = baseUrl(a); const id = a._[1];
-  if (!base || !id) { err(red('usage: tokenzero verify <request_id> [--url …]')); process.exitCode = 2; return; }
+  if (base && a.flags.chain) return cmdVerifyChain(a, base);
+  if (!base || !id) { err(red('usage: tokenzero verify <request_id> [--url …]  |  tokenzero verify --chain [--limit N]')); process.exitCode = 2; return; }
   const [r, k] = await Promise.all([api(base, `/v1/ledger/receipt/${encodeURIComponent(id)}`), api(base, '/.well-known/tokenzero.json')]);
   if (r.status !== 200) { err(red(`receipt: ${r.status}`)); process.exitCode = 1; return; }
   const jwk = (k.body?.keys ?? []).find((x: any) => x.kid === r.body.receipt.key_id);
@@ -403,6 +404,32 @@ async function cmdVerify(a: Args) {
   out(`${ok ? green('✓ valid') : red('✗ INVALID')} signature (Ed25519, key ${rc.key_id}, verified locally)`);
   out(`  ${rc.id} · ${new Date(rc.ts).toISOString()} · ${rc.provider} ${rc.requested_model}${rc.served_model && rc.served_model !== rc.requested_model ? ' → ' + rc.served_model : ''}`);
   out(`  baseline $${rc.baseline_usd} · actual $${rc.actual_usd} · saved $${rc.savings_usd} · engines ${rc.engines.join(',') || 'none'} · pricing ${rc.pricing_version}`);
+  if (!ok) process.exitCode = 1;
+}
+
+/** Walk the workspace's receipt chain: every signature, every seq, every prev_receipt_hash, checked locally. */
+async function cmdVerifyChain(a: Args, base: string) {
+  const saved = loadCreds(); const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
+  if (!key) { err(red('--chain needs the workspace key (TOKENZERO_KEY, --key, or saved credentials)')); process.exitCode = 2; return; }
+  const limit = Number(a.flags.limit) || 50;
+  const [c, k] = await Promise.all([api(base, `/v1/ledger/chain?limit=${limit}`, { headers: { 'x-tokenzero-key': key } }), api(base, '/.well-known/tokenzero.json')]);
+  if (c.status !== 200) { err(red(`chain: ${c.status} ${JSON.stringify(c.body).slice(0, 200)}`)); process.exitCode = 1; return; }
+  const items: { receipt: any; signature: string }[] = c.body.items ?? [];
+  const keys = new Map<string, crypto.KeyObject>();
+  for (const jwk of k.body?.keys ?? []) keys.set(jwk.kid, crypto.createPublicKey({ key: { kty: jwk.kty, crv: jwk.crv, x: jwk.x }, format: 'jwk' }));
+  const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+  let ok = true, reason = '';
+  for (let i = 0; i < items.length && ok; i++) {
+    const { receipt, signature } = items[i]; const pub = keys.get(receipt.key_id);
+    if (!pub || !crypto.verify(null, Buffer.from(canonical(receipt)), pub, Buffer.from(signature, 'base64url'))) { ok = false; reason = `bad signature at seq ${receipt.seq}`; break; }
+    const prev = items[i - 1];
+    if (prev && receipt.seq !== prev.receipt.seq + 1) { ok = false; reason = `seq ${receipt.seq} does not follow ${prev.receipt.seq}`; }
+    else if (prev && receipt.prev_receipt_hash !== sha(prev.signature)) { ok = false; reason = `prev_receipt_hash mismatch at seq ${receipt.seq}`; }
+    else if (!prev && receipt.seq === 1 && receipt.prev_receipt_hash !== '0'.repeat(64)) { ok = false; reason = 'genesis receipt does not point at the zero hash'; }
+  }
+  if (a.flags.json) { out(JSON.stringify({ valid: ok, reason: reason || null, checked: items.length, head_seq: c.body.head_seq, server_verification: c.body.verification }, null, 2)); if (!ok) process.exitCode = 1; return; }
+  out(`${ok ? green('✓ chain intact') : red('✗ CHAIN BROKEN')}: ${items.length} receipt(s) checked locally${c.body.head_seq != null ? `, head seq ${c.body.head_seq}` : ''}${reason ? ' — ' + reason : ''}`);
+  if (items.length) out(dim(`  ${items[0].receipt.seq ?? '?'} … ${items.at(-1)!.receipt.seq ?? '?'} · savings in this run $${items.reduce((s, x) => s + (x.receipt.savings_usd ?? 0), 0).toFixed(4)} · key ${items[0].receipt.key_id}`));
   if (!ok) process.exitCode = 1;
 }
 
@@ -418,6 +445,7 @@ function help() {
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold('tokenzero usage')} [--json]          Routed spend vs the free tier, savings, fee preview.
   ${bold('tokenzero verify')} <request_id>     Verify a savings receipt's signature offline.
+  ${bold('tokenzero verify --chain')} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold('tokenzero rotate-key')} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
 
   Env: TOKENZERO_URL, TOKENZERO_KEY, NO_COLOR`);
