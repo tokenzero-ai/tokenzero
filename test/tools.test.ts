@@ -92,11 +92,14 @@ test('analyzer: filesFromDiff preserves hunk line numbers and matches full-file 
   assert.equal(b.estimated_waste_pct, a.estimated_waste_pct);
 });
 
-test('cli init: --github-action and --mcp write .github/workflows/tokenzero.yml, .cursor/mcp.json, and .mcp.json', async () => {
+test('cli init: --github-action, --mcp, and --agent-rules write workflow, MCP configs, and AGENTS.md', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-init-'));
-  await run(process.execPath, ['cli/bin/tokenzero.mjs', 'init', dir, '--url', 'http://127.0.0.1:9', '--no-env', '--github-action', '--mcp', '--yes']);
+  await run(process.execPath, ['cli/bin/tokenzero.mjs', 'init', dir, '--url', 'http://127.0.0.1:9', '--no-env', '--github-action', '--mcp', '--agent-rules', '--yes']);
   assert.ok(fs.existsSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml')));
   assert.match(fs.readFileSync(path.join(dir, '.github', 'workflows', 'tokenzero.yml'), 'utf8'), /tokenzero-ai\/tokenzero\/action@v0/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.cursor', 'mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')).mcpServers.tokenzero.url, 'http://127.0.0.1:9/mcp');
+  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /TokenZero LLM FinOps & MCP Gateway/);
+  const dash = await run(process.execPath, ['cli/bin/tokenzero.mjs', 'dashboard', '--url', 'https://tokenzero.sh', '--key', 'tz_live_test123', '--json']);
+  assert.equal(JSON.parse(dash.stdout).dashboard_url, 'https://tokenzero.sh/dashboard#key=tz_live_test123');
 });

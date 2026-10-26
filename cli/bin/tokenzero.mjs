@@ -3,6 +3,7 @@
 
 // cli/src/main.ts
 import fs2 from "node:fs";
+import os from "node:os";
 import path2 from "node:path";
 import crypto2 from "node:crypto";
 import readline from "node:readline/promises";
@@ -666,7 +667,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.5";
+var VERSION = "0.1.6";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -875,9 +876,11 @@ ${bold("Your code")}`);
   }
   if (a.flags["github-action"]) await setupGithubAction(root, a);
   if (a.flags.mcp) await setupMcp(root, base, a);
+  if (a.flags["agent-rules"]) await setupAgentRules(root, base, a);
+  if (key && wsId) saveCreds({ workspace_id: wsId, api_key: key, url: base });
   out(`
 ${bold("Next")}`);
-  if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}`);
+  if (wsId) out(`  dashboard   ${base}/dashboard?workspace=${wsId}${key ? "#key=" + redactKey(key, key) : ""}`);
   out(`  usage       ${selfCmd(base)} usage`);
   if (wsId) out(`  badge       turn on public stats in the dashboard, then: [![LLM spend verified by TokenZero](${base}/v1/badge/${wsId}.svg)](${base}/dashboard?workspace=${wsId})`);
   if (!a.flags["github-action"]) out(`  PR checks   ${selfCmd(base)} init --github-action`);
@@ -943,6 +946,103 @@ ${bold("MCP")} ${dim("(audit_repo_token_waste, optimize_prompt_payload, calculat
       out(green(`  \u2713 wrote ${rel}`));
     }
   }
+}
+var AGENT_RULES_MARKER = "<!-- tokenzero-agent-rules -->";
+function credsPath() {
+  return path2.join(process.env.TOKENZERO_CONFIG_DIR || path2.join(os.homedir(), ".config", "tokenzero"), "credentials.json");
+}
+function saveCreds(c2) {
+  try {
+    const p = credsPath();
+    fs2.mkdirSync(path2.dirname(p), { recursive: true, mode: 448 });
+    fs2.writeFileSync(p, JSON.stringify({ ...c2, updated_at: (/* @__PURE__ */ new Date()).toISOString() }, null, 2) + "\n", { mode: 384 });
+  } catch {
+  }
+}
+function loadCreds() {
+  try {
+    return JSON.parse(fs2.readFileSync(credsPath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+async function setupAgentRules(root, base, a) {
+  out(`
+${bold("Agent Rules")} ${dim("(AGENTS.md FinOps & MCP routing rules)")}`);
+  const file = path2.join(root, "AGENTS.md");
+  const existing = fs2.existsSync(file) ? fs2.readFileSync(file, "utf8") : "";
+  if (existing.includes(AGENT_RULES_MARKER)) {
+    out(dim("  AGENTS.md: already includes TokenZero FinOps rules"));
+    return;
+  }
+  const block = [
+    AGENT_RULES_MARKER,
+    "## TokenZero LLM FinOps & MCP Gateway",
+    `- **1-Line BYOK Gateway:** Point \`OPENAI_BASE_URL=${base}/v1\` and \`ANTHROPIC_BASE_URL=${base}\` (with \`X-TokenZero-Key\` or \`/w/<key>/v1\`). Provider keys pass straight through and are never stored.`,
+    `- **MCP Tools:** Run \`npx -y @tokenzero/mcp\` or connect HTTP MCP at \`${base}/mcp\` for \`audit_repo_token_waste\`, \`calculate_model_arbitrage\`, \`optimize_prompt_payload\`, and \`provision_workspace\`.`,
+    `- **Local Audit:** Run \`npx -y @tokenzero/cli audit\` before opening PRs that add or modify LLM calls.`
+  ].join("\n") + "\n";
+  if (await confirm("  Add TokenZero FinOps & MCP rules to AGENTS.md?", a)) {
+    const sep = existing && !existing.endsWith("\n") ? "\n\n" : existing ? "\n" : "";
+    fs2.writeFileSync(file, existing + sep + block);
+    out(green("  \u2713 wrote AGENTS.md"));
+  }
+}
+async function cmdSignup(a) {
+  const base = baseUrl(a);
+  if (!base) {
+    err(red("No gateway URL. Pass --url https://\u2026 or set TOKENZERO_URL."));
+    process.exitCode = 2;
+    return;
+  }
+  const name = a.flags.name || path2.basename(process.cwd()) || "cli-signup";
+  const r = await api(base, "/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) });
+  if (r.status !== 201 && r.status !== 200) {
+    err(red(`signup failed (${r.status}): ${JSON.stringify(r.body).slice(0, 200)}`));
+    process.exitCode = 1;
+    return;
+  }
+  const wsId = r.body.workspace?.id ?? r.body.workspace_id ?? r.body.id;
+  const key = r.body.key ?? r.body.api_key;
+  saveCreds({ workspace_id: wsId, api_key: key, url: base });
+  const payload = {
+    workspace_id: wsId,
+    api_key: key,
+    dashboard_url: `${base}/dashboard?workspace=${wsId}`,
+    one_click_dashboard_url: `${base}/dashboard?workspace=${wsId}#key=${key}`,
+    openai_base_url: `${base}/w/${key}/v1`,
+    anthropic_base_url: `${base}/w/${key}`,
+    mcp_url: `${base}/mcp`,
+    badge_svg_url: `${base}/v1/badge/${wsId}.svg`
+  };
+  if (a.flags.json) {
+    out(JSON.stringify(payload, null, 2));
+    return;
+  }
+  out(`${bold("TokenZero Workspace Provisioned (0-Click / No Form)")}`);
+  out(`  workspace_id     ${cyan(wsId)}`);
+  out(`  api_key          ${green(key)}`);
+  out(`  1-click dash     ${cyan(payload.one_click_dashboard_url)}`);
+  out(`  OPENAI_BASE_URL  ${payload.openai_base_url}`);
+  out(`  ANTHROPIC_BASE_URL ${payload.anthropic_base_url}`);
+  out(dim(`  Saved credentials to ${credsPath()}`));
+}
+async function cmdDashboard(a) {
+  const saved = loadCreds();
+  const base = baseUrl(a) || saved?.url || "https://tokenzero.sh";
+  const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key || "";
+  const wsId = saved?.workspace_id || "";
+  if (!key && !wsId) {
+    err(red("No saved workspace credentials. Run `npx -y @tokenzero/cli signup` or `tokenzero init` first."));
+    process.exitCode = 2;
+    return;
+  }
+  const url = `${base}/dashboard${wsId ? "?workspace=" + wsId : ""}${key ? "#key=" + key : ""}`;
+  if (a.flags.json) {
+    out(JSON.stringify({ workspace_id: wsId || null, dashboard_url: url }, null, 2));
+    return;
+  }
+  out(url);
 }
 async function cmdAudit(a) {
   const root = path2.resolve(a._[1] ?? ".");
@@ -1059,7 +1159,11 @@ async function cmdVerify(a) {
 function help() {
   out(`${bold("tokenzero")} v${VERSION} \u2014 cut your LLM bill with a BYOK gateway
 
-  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--github-action]
+  ${bold("tokenzero signup")} [--name NAME] [--json]
+      Instant 1-command workspace & API key provisioning (no form, saves to ~/.config/tokenzero).
+  ${bold("tokenzero dashboard")} [--json]
+      Print your 1-click auto-unlock dashboard URL (#key= fragment, never sent in HTTP headers).
+  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--github-action] [--agent-rules]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
   ${bold("tokenzero audit")} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
@@ -1078,6 +1182,10 @@ async function main() {
   const cmd = a._[0];
   if (a.flags.version || cmd === "version") return out(VERSION);
   switch (cmd) {
+    case "signup":
+      return cmdSignup(a);
+    case "dashboard":
+      return cmdDashboard(a);
     case "init":
       return cmdInit(a);
     case "audit":

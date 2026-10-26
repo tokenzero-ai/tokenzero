@@ -1,13 +1,15 @@
 {
   "name": "tokenzero-tools",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "description": "TokenZero open tools: @tokenzero/cli, the @tokenzero/mcp server, and the static LLM token-waste analyzer behind both.",
   "type": "module",
   "private": true,
   "license": "Apache-2.0",
   "author": "TokenZero Contributors <support@tokenzero.sh>",
   "homepage": "https://tokenzero.sh",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "node cli/build.mjs && node mcp/build.mjs",
     "test": "node scripts/run-tests.mjs",

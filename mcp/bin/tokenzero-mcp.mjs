@@ -684,7 +684,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.1.5";
+var VERSION = "0.1.6";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");
@@ -703,6 +703,11 @@ var TOOLS = [
     name: "optimize_prompt_payload",
     description: "Rewrite an OpenAI Chat/Responses or Anthropic Messages request body so its static prefix is provider-cacheable, and project the saving. Sends the body you pass to the TokenZero service (set TOKENZERO_URL); do not pass secrets in it.",
     inputSchema: { type: "object", properties: { body: { type: "object" }, endpoint: { type: "string", enum: ["/v1/chat/completions", "/v1/responses", "/v1/messages"] }, strategy: { type: "string", enum: ["static", "conversation"] } }, required: ["body"], additionalProperties: false }
+  },
+  {
+    name: "provision_workspace",
+    description: "Zero-click autonomous workspace and API key provisioning on TokenZero (POST /v1/workspaces). Returns a live tz_live_... API key, workspace_id, 1-click auto-unlock dashboard URL, gateway base URLs, and badge SVG URL with zero signup form required.",
+    inputSchema: { type: "object", properties: { name: { type: "string", description: "Optional workspace name (defaults to mcp-agent)" } }, additionalProperties: false }
   }
 ];
 async function callTool(name, args) {
@@ -730,6 +735,38 @@ async function callTool(name, args) {
       if (j.error) throw new Error(j.error.message);
       if (j.result?.isError) throw new Error(j.result.content?.[0]?.text ?? "remote tool error");
       return j.result?.structuredContent ?? j.result;
+    }
+    case "provision_workspace": {
+      const base = serviceUrl();
+      if (!base) throw new Error("set TOKENZERO_URL to use this tool");
+      const wsName = typeof args?.name === "string" && args.name.trim() ? args.name.trim() : "mcp-agent";
+      const r = await fetch(base + "/v1/workspaces", {
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(15e3),
+        headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` },
+        body: JSON.stringify({ name: wsName })
+      }).catch((e) => {
+        throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`);
+      });
+      if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
+      const j = await r.json();
+      if (r.status >= 400) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
+      const id = j.workspace?.id ?? j.workspace_id ?? j.id;
+      const key = j.key ?? j.api_key;
+      return {
+        workspace_id: id,
+        api_key: key,
+        name: wsName,
+        dashboard_url: `${base}/dashboard?workspace=${id}`,
+        one_click_dashboard_url: `${base}/dashboard?workspace=${id}#key=${key}`,
+        gateway_base_url: `${base}/v1`,
+        anthropic_base_url: base,
+        gemini_base_url: `${base}/gemini`,
+        zero_code_base_url: `${base}/w/${key}/v1`,
+        mcp_url: `${base}/mcp`,
+        badge_svg_url: `${base}/v1/badge/${id}.svg`
+      };
     }
     default:
       throw new Error(`unknown tool ${name}`);

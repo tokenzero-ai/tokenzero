@@ -1,6 +1,6 @@
 {
   "name": "@tokenzero/mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "TokenZero MCP server (stdio): audit LLM token waste in your project locally, price model alternatives, and make prompts cache-friendly from Claude Code, Cursor, Windsurf or Cline.",
   "type": "module",
   "license": "Apache-2.0",
