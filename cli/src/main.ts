@@ -15,7 +15,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -39,7 +39,7 @@ function parseArgs(argv: string[]): Args {
   }
   return a;
 }
-const VALUE_FLAGS = new Set(['url', 'name', 'key', 'format', 'diff', 'fail-over', 'env-file', 'limit']);
+const VALUE_FLAGS = new Set(['url', 'name', 'key', 'format', 'diff', 'fail-over', 'env-file', 'limit', 'window']);
 
 // ---- output -----------------------------------------------------------------
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -355,6 +355,32 @@ async function cmdAudit(a: Args) {
   }
 }
 
+async function cmdMetrics(a: Args) {
+  const saved = loadCreds(); const base = baseUrl(a) || saved?.url || 'https://tokenzero.sh'; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
+  const w = ['24h', '7d', '30d', 'all'].includes(String(a.flags.window)) ? String(a.flags.window) : '30d';
+  const demo = !!a.flags.demo || !key;
+  const r = await api(base, `/v1/workspaces/me/metrics?${demo ? 'demo=1' : 'window=' + w}`, { headers: demo ? {} : { 'x-tokenzero-key': key } });
+  if (r.status !== 200) { err(red(`metrics: ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`)); process.exitCode = 1; return; }
+  if (a.flags.json) { out(JSON.stringify(r.body, null, 2)); return; }
+  const m = r.body, c = m.cost_and_roi, e = m.by_engine, sp = m.speed_and_latency, q = m.quality_and_safety, rl = m.reliability_and_privacy;
+  const $ = (n: number | null | undefined) => n == null ? '—' : '$' + Number(n).toFixed(2);
+  out(`${bold('tokenzero metrics')} · ${m.demo ? yellow('SAMPLE DATA') : m.workspace_id} · plan ${m.plan} · window ${m.window} · gateway v${m.version}`);
+  if (m.demo) out(dim('  ' + m.note));
+  out(`\n${bold('Cost & ROI')}  baseline ${$(c.baseline_spend_usd)}  actual ${$(c.actual_spend_usd)}  saved ${green($(c.hard_savings_usd))} (${c.savings_rate_pct}%)  fee ${$(c.estimated_fee_usd)}${c.fee_waived_by_guarantee ? ' (waived: 3x-ROI rule)' : ''}  net ${$(c.net_savings_after_fee_usd)}  ROI ${c.net_roi_multiple == null ? '∞ (free tier)' : c.net_roi_multiple + 'x'} (floor ${c.roi_guarantee_floor}x)`);
+  out(`${bold('Engines')}`);
+  out(`  1 prompt cache + CAPC   ${num(e.engine1_prompt_cache_and_capc.requests_optimized)} formatted · ${num(e.engine1_prompt_cache_and_capc.capc_schemas_minified)} schemas minified · ${num(e.engine1_prompt_cache_and_capc.cached_input_tokens)} cached tokens · ${e.engine1_prompt_cache_and_capc.prompt_cache_hit_rate_pct}% hit · ${green($(e.engine1_prompt_cache_and_capc.savings_usd))} (${e.engine1_prompt_cache_and_capc.share_of_total_savings_pct}%)`);
+  out(`  2 edge cache            ${num(e.engine2_edge_cache.exact_hits)} exact + ${num(e.engine2_edge_cache.semantic_hits)} semantic hits (${e.engine2_edge_cache.total_hit_rate_pct}%) · ${num(e.engine2_edge_cache.tokens_avoided)} tokens avoided · ${green($(e.engine2_edge_cache.savings_usd))} (${e.engine2_edge_cache.share_of_total_savings_pct}%)`);
+  out(`  3 cascade + reasoning   mode ${e.engine3_cascade_and_reasoning.mode} · ${num(e.engine3_cascade_and_reasoning.auto_routed_count)} routed · ${num(e.engine3_cascade_and_reasoning.advised_count)} advised${e.engine3_cascade_and_reasoning.would_have_saved_usd ? ' (would have saved ' + $(e.engine3_cascade_and_reasoning.would_have_saved_usd) + ')' : ''} · ${num(e.engine3_cascade_and_reasoning.reasoning_capped_count)} reasoning caps · ${green($(e.engine3_cascade_and_reasoning.savings_usd))} (${e.engine3_cascade_and_reasoning.share_of_total_savings_pct}%)`);
+  out(`  4 signed ledger         ${num(e.engine4_cryptographic_ledger.receipts_signed)} receipts · chain head #${e.engine4_cryptographic_ledger.chain_head_seq} ${e.engine4_cryptographic_ledger.chain_head_hash ?? ''} · key ${e.engine4_cryptographic_ledger.signer_key_id}`);
+  out(`${bold('Speed')}     gateway overhead p50 +${sp.gateway_overhead_p50_ms ?? '—'} ms · cache hit p50 ${sp.cache_hit_p50_ms ?? '—'} ms · upstream p50 ${sp.upstream_p50_ms ?? '—'} ms · effective p50 ${sp.effective_p50_ms ?? '—'} ms · ${num(sp.total_wall_clock_ms_saved)} ms saved (${sp.avg_speedup_pct}% faster)`);
+  out(`${bold('Quality')}   shadow eval ${q.shadow_eval_enabled ? 'on' : 'off'} · ${num(q.samples_evaluated)} samples · agreement ${q.agreement_rate_pct ?? '—'}% (floor ${q.sla_floor_pct}%) · UCB disagreement ${q.conformal_ucb_disagreement_pct ?? '—'}% · breaker ${q.circuit_breaker_status}`);
+  out(`${bold('Reliability')} ${num(rl.total_requests)} requests · ${rl.effective_availability_pct}% ok · ${num(rl.upstream_429_rescued)} 429 + ${num(rl.upstream_5xx_rescued)} 5xx rescued · ZDR ${rl.zdr_enabled ? 'on' : 'off'} (${num(rl.zdr_requests_count)} requests, ${rl.zdr_share_pct}%)`);
+  if (m.by_model.length) { out(bold('By model')); for (const r of m.by_model.slice(0, 12)) out(`  ${r.model.padEnd(28)} ${String(r.requests).padStart(7)} req  baseline ${$(r.baseline_usd).padStart(10)}  actual ${$(r.actual_usd).padStart(10)}  saved ${green($(r.saved_usd).padStart(9))} ${String(r.savings_pct).padStart(5)}%`); }
+  if (m.actionable_recommendations.length) { out(bold('Recommendations')); for (const rec of m.actionable_recommendations) out(`  ${yellow('→')} ${rec.title}${rec.estimated_extra_savings_usd ? ' (~' + $(rec.estimated_extra_savings_usd) + ' more)' : rec.estimated_extra_savings_range_pct ? ' (+' + rec.estimated_extra_savings_range_pct + '%)' : ''}\n    apply: curl -X POST ${base}/v1/workspaces/settings -H "X-TokenZero-Key: $TOKENZERO_KEY" -H "content-type: application/json" -d '${JSON.stringify(rec.setting_patch)}'`); }
+  out(dim(`  dashboard scorecard: ${m.links.dashboard}`));
+}
+function num(n: unknown) { return n == null ? '—' : Number(n).toLocaleString('en-US'); }
+
 async function cmdDoctor(a: Args) {
   const saved = loadCreds(); const base = baseUrl(a) || saved?.url || 'https://tokenzero.sh'; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
   const r = await api(base, '/v1/doctor', { headers: key ? { 'x-tokenzero-key': key } : {} });
@@ -457,6 +483,7 @@ function help() {
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold('tokenzero usage')} [--json]          Routed spend vs the free tier, savings, fee preview.
   ${bold('tokenzero doctor')} [--key K] [--json] Six-check connection and receipt doctor: gateway, signer, pricing, key, quota, settings.
+  ${bold('tokenzero metrics')} [--window 24h|7d|30d|all] [--key K] [--json] [--demo]  Value scorecard: savings, ROI, engines, speed, parity, reliability, per-model, recommendations.
   ${bold('tokenzero verify')} <request_id>     Verify a savings receipt's signature offline.
   ${bold('tokenzero verify --chain')} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold('tokenzero rotate-key')} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
@@ -477,6 +504,7 @@ async function main() {
     case 'audit': return cmdAudit(a);
     case 'usage': return cmdUsage(a);
     case 'doctor': return cmdDoctor(a);
+    case 'metrics': return cmdMetrics(a);
     case 'verify': return cmdVerify(a);
     case 'rotate-key': return cmdRotate(a);
     case undefined: case 'help': return help();

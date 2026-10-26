@@ -754,7 +754,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.0";
+var VERSION = "0.2.1";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -776,6 +776,11 @@ var TOOLS = [
     name: "optimize_prompt_payload",
     description: "Rewrite an OpenAI Chat/Responses or Anthropic Messages request body so its static prefix is provider-cacheable, and project the saving. Sends the body you pass to the TokenZero service (set TOKENZERO_URL); do not pass secrets in it.",
     inputSchema: { type: "object", properties: { body: { type: "object" }, endpoint: { type: "string", enum: ["/v1/chat/completions", "/v1/responses", "/v1/messages"] }, strategy: { type: "string", enum: ["static", "conversation"] } }, required: ["body"], additionalProperties: false }
+  },
+  {
+    name: "workspace_metrics",
+    description: "Live value scorecard for a TokenZero workspace (GET /v1/workspaces/me/metrics): hard savings and net ROI per window, per-engine contribution, speed, parity, availability, privacy posture, per-model breakdown and one-click recommendations. Uses TOKENZERO_KEY unless a key is given; demo: true returns a labelled sample.",
+    inputSchema: { type: "object", properties: { key: { type: "string", description: "workspace key (tz_live_\u2026); defaults to TOKENZERO_KEY" }, window: { type: "string", enum: ["24h", "7d", "30d", "all"] }, demo: { type: "boolean" } } }
   },
   {
     name: "provision_workspace",
@@ -808,6 +813,19 @@ async function callTool(name, args) {
       if (j.error) throw new Error(j.error.message);
       if (j.result?.isError) throw new Error(j.result.content?.[0]?.text ?? "remote tool error");
       return j.result?.structuredContent ?? j.result;
+    }
+    case "workspace_metrics": {
+      const base = serviceUrl();
+      if (!base) throw new Error("set TOKENZERO_URL to use this tool");
+      const key = typeof args?.key === "string" && args.key.trim() ? args.key.trim() : process.env.TOKENZERO_KEY ?? "";
+      const demo = args?.demo === true || !key;
+      const w = ["24h", "7d", "30d", "all"].includes(args?.window) ? args.window : "30d";
+      const r = await fetch(`${base}/v1/workspaces/me/metrics?${demo ? "demo=1" : `window=${w}`}`, { redirect: "manual", signal: AbortSignal.timeout(2e4), headers: { "user-agent": `tokenzero-mcp/${VERSION}`, ...demo ? {} : { "x-tokenzero-key": key } } }).catch((e) => {
+        throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e})`);
+      });
+      const j = await r.json();
+      if (r.status !== 200) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
+      return demo && !args?.demo ? { ...j, note: (j.note ? j.note + " " : "") + "No key was given and TOKENZERO_KEY is unset, so this is the sample scorecard." } : j;
     }
     case "provision_workspace": {
       const base = serviceUrl();

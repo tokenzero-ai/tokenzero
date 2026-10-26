@@ -47,7 +47,7 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
   const by = (id: number) => res.find(r => r.id === id);
   assert.equal(by(1).result.protocolVersion, '2025-06-18');
   assert.equal(by(1).result.serverInfo.version, JSON.parse(fs.readFileSync('mcp/package.json', 'utf8')).version, 'MCP version matches mcp/package.json');
-  assert.deepEqual(by(2).result.tools.map((t: any) => t.name), ['audit_repo_token_waste', 'calculate_model_arbitrage', 'optimize_prompt_payload', 'provision_workspace']);
+  assert.deepEqual(by(2).result.tools.map((t: any) => t.name), ['audit_repo_token_waste', 'calculate_model_arbitrage', 'optimize_prompt_payload', 'workspace_metrics', 'provision_workspace']);
   const audit = by(3).result.structuredContent;
   assert.equal(audit.repo_kind, 'app');
   assert.ok(audit.findings.some((f: any) => f.severity === 'high' && /static prompt/.test(f.title)));
@@ -74,7 +74,7 @@ test('stdio MCP: 2026-07-28 clients (no handshake) and legacy clients are both s
   assert.deepEqual(by(1).result.supportedVersions, ['2026-07-28']);
   assert.equal(by(1).result._meta['io.modelcontextprotocol/serverInfo'].name, 'tokenzero');
   assert.equal(by(1).result.cacheScope, 'public'); assert.ok(by(1).result.ttlMs > 0);
-  assert.equal(by(2).result.resultType, 'complete'); assert.equal(by(2).result.tools.length, 4); assert.ok(by(2).result.ttlMs > 0);
+  assert.equal(by(2).result.resultType, 'complete'); assert.equal(by(2).result.tools.length, 5); assert.ok(by(2).result.ttlMs > 0);
   assert.equal(by(3).result.resultType, 'complete'); assert.equal(by(3).result.isError, false);
   assert.equal(by(4).error.code, -32022, 'UnsupportedProtocolVersionError');
   assert.deepEqual(by(4).error.data, { supported: ['2026-07-28'], requested: '1900-01-01' });
