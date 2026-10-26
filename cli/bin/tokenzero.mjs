@@ -710,7 +710,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.1.8";
+var VERSION = "0.2.0";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -1118,6 +1118,34 @@ ${bold(f.title)}
     process.exitCode = 1;
   }
 }
+async function cmdDoctor(a) {
+  const saved = loadCreds();
+  const base = baseUrl(a) || saved?.url || "https://tokenzero.sh";
+  const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key || "";
+  const r = await api(base, "/v1/doctor", { headers: key ? { "x-tokenzero-key": key } : {} });
+  if (r.status !== 200) {
+    err(red(`doctor: ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`));
+    process.exitCode = 1;
+    return;
+  }
+  if (a.flags.json) {
+    out(JSON.stringify(r.body, null, 2));
+    return;
+  }
+  const d = r.body;
+  out(`${bold("tokenzero doctor")} \xB7 ${base} \xB7 gateway v${d.version} \xB7 ${d.authenticated ? "workspace key accepted" : "no workspace key (pass --key or set TOKENZERO_KEY for quota and settings checks)"}`);
+  for (const c2 of d.checks) {
+    const tag = c2.status === "pass" ? green("[PASS]") : c2.status === "warn" ? yellow("[WARN]") : dim("[INFO]");
+    out(`  ${tag} ${c2.label}: ${c2.detail}`);
+  }
+  out(dim(`  OPENAI_BASE_URL=${d.snippets.openai_base_url}`));
+  out(dim(`  ANTHROPIC_BASE_URL=${d.snippets.anthropic_base_url}`));
+  out(dim(`  dashboard: ${d.snippets.dashboard_url}`));
+  if (!d.ok) {
+    out(yellow(`  something needs attention; support: ${d.support.support_page} (${d.support.sla_target_response_minutes}-minute response target)`));
+    process.exitCode = 1;
+  }
+}
 async function cmdUsage(a) {
   const saved = loadCreds();
   const base = baseUrl(a) || saved?.url || "";
@@ -1269,6 +1297,7 @@ function help() {
   ${bold("tokenzero audit")} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold("tokenzero usage")} [--json]          Routed spend vs the free tier, savings, fee preview.
+  ${bold("tokenzero doctor")} [--key K] [--json] Six-check connection and receipt doctor: gateway, signer, pricing, key, quota, settings.
   ${bold("tokenzero verify")} <request_id>     Verify a savings receipt's signature offline.
   ${bold("tokenzero verify --chain")} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold("tokenzero rotate-key")} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
@@ -1294,6 +1323,8 @@ async function main() {
       return cmdAudit(a);
     case "usage":
       return cmdUsage(a);
+    case "doctor":
+      return cmdDoctor(a);
     case "verify":
       return cmdVerify(a);
     case "rotate-key":

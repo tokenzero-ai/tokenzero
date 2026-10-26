@@ -15,7 +15,7 @@ import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../
 import { walk, manifests } from './scan.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.1.8';
+const VERSION = '0.2.0';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -355,6 +355,18 @@ async function cmdAudit(a: Args) {
   }
 }
 
+async function cmdDoctor(a: Args) {
+  const saved = loadCreds(); const base = baseUrl(a) || saved?.url || 'https://tokenzero.sh'; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
+  const r = await api(base, '/v1/doctor', { headers: key ? { 'x-tokenzero-key': key } : {} });
+  if (r.status !== 200) { err(red(`doctor: ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`)); process.exitCode = 1; return; }
+  if (a.flags.json) { out(JSON.stringify(r.body, null, 2)); return; }
+  const d = r.body;
+  out(`${bold('tokenzero doctor')} · ${base} · gateway v${d.version} · ${d.authenticated ? 'workspace key accepted' : 'no workspace key (pass --key or set TOKENZERO_KEY for quota and settings checks)'}`);
+  for (const c of d.checks) { const tag = c.status === 'pass' ? green('[PASS]') : c.status === 'warn' ? yellow('[WARN]') : dim('[INFO]'); out(`  ${tag} ${c.label}: ${c.detail}`); }
+  out(dim(`  OPENAI_BASE_URL=${d.snippets.openai_base_url}`)); out(dim(`  ANTHROPIC_BASE_URL=${d.snippets.anthropic_base_url}`)); out(dim(`  dashboard: ${d.snippets.dashboard_url}`));
+  if (!d.ok) { out(yellow(`  something needs attention; support: ${d.support.support_page} (${d.support.sla_target_response_minutes}-minute response target)`)); process.exitCode = 1; }
+}
+
 async function cmdUsage(a: Args) {
   const saved = loadCreds(); const base = baseUrl(a) || saved?.url || ''; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key;
   if (!base || !key) { err(red('Need TOKENZERO_URL and TOKENZERO_KEY (run tokenzero init), or --url and --key.')); process.exitCode = 2; return; }
@@ -444,6 +456,7 @@ function help() {
   ${bold('tokenzero audit')} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]
       Static token-waste audit. Runs locally; nothing is uploaded. --fail-over makes it a CI gate.
   ${bold('tokenzero usage')} [--json]          Routed spend vs the free tier, savings, fee preview.
+  ${bold('tokenzero doctor')} [--key K] [--json] Six-check connection and receipt doctor: gateway, signer, pricing, key, quota, settings.
   ${bold('tokenzero verify')} <request_id>     Verify a savings receipt's signature offline.
   ${bold('tokenzero verify --chain')} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold('tokenzero rotate-key')} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
@@ -463,6 +476,7 @@ async function main() {
     case 'dashboard': return cmdDashboard(a);
     case 'audit': return cmdAudit(a);
     case 'usage': return cmdUsage(a);
+    case 'doctor': return cmdDoctor(a);
     case 'verify': return cmdVerify(a);
     case 'rotate-key': return cmdRotate(a);
     case undefined: case 'help': return help();
