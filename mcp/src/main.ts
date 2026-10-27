@@ -16,7 +16,7 @@ import { PRICING_VERSION } from '../../src/pricing.ts';
 import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.2.7';
+const VERSION = '0.2.8';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.

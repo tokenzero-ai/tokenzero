@@ -10,13 +10,14 @@ const ghHeaders = (token?: string): Record<string, string> => ({ 'user-agent': U
 export interface FetchOptions { token?: string; maxFiles?: number; }
 
 
-export async function fetchRepoFiles(repo: string, opts: FetchOptions = {}): Promise<{ files: SourceFile[]; manifests: SourceFile[]; branch: string; total_candidates: number }> {
+export async function fetchRepoFiles(repo: string, opts: FetchOptions = {}): Promise<{ files: SourceFile[]; manifests: SourceFile[]; branch: string; total_candidates: number; full_name: string }> {
   const maxFiles = opts.maxFiles ?? 120;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('repo must look like owner/name');
   const meta = await fetch(`${GH}/repos/${repo}`, { headers: ghHeaders(opts.token) });
   if (meta.status === 404) throw new Error('repository not found (private repos are not supported)');
   if (!meta.ok) throw new Error(`GitHub API ${meta.status}: ${(await meta.text()).slice(0, 200)}`);
-  const branch = (await meta.json() as any).default_branch as string;
+  // GitHub answers a renamed or transferred repository under its current owner/name (full_name).
+  const metaJson = await meta.json() as any, branch = metaJson.default_branch as string, fullName = typeof metaJson.full_name === 'string' ? metaJson.full_name : repo;
   const tree = await fetch(`${GH}/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, { headers: ghHeaders(opts.token) });
   if (!tree.ok) throw new Error(`GitHub tree ${tree.status}`);
   const treeAll = (await tree.json() as any).tree as any[];
@@ -38,7 +39,7 @@ export async function fetchRepoFiles(repo: string, opts: FetchOptions = {}): Pro
     const r = await fetch(`https://raw.githubusercontent.com/${repo}/${branch}/${n}`, { headers: { 'user-agent': UA } });
     return r.ok ? { path: n, content: await r.text() } : null;
   }))).filter((m): m is SourceFile => !!m);
-  return { files, manifests, branch, total_candidates: entries.length };
+  return { files, manifests, branch, total_candidates: entries.length, full_name: fullName };
 }
 
 export async function fetchPrDiff(repo: string, pr: number, token?: string): Promise<string> {

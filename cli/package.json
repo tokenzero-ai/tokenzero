@@ -1,6 +1,6 @@
 {
   "name": "@tokenzero/cli",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "TokenZero CLI: connect a project to the TokenZero BYOK gateway, audit LLM token waste locally, check usage and verify signed savings receipts.",
   "type": "module",
   "license": "Apache-2.0",

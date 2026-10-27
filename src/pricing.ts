@@ -4,7 +4,7 @@
 //
 // Sources: developers.openai.com/api/docs/pricing, ai.google.dev/gemini-api/docs/pricing,
 // platform.claude.com pricing (via the Anthropic model table of the same date).
-export const PRICING_VERSION = '2026-10-26';
+export const PRICING_VERSION = '2026-10-27';
 export const PRICING_MAX_AGE_DAYS = 45;
 
 /**
@@ -56,11 +56,15 @@ export const PRICES: Record<string, Price> = {
   // ---- OpenAI (standard tier, ≤272K; cache write = 30m TTL rate) ----
   'gpt-6-astra': P('openai', 'frontier', 10, 50, 1, 12.5, { ultrafast: true, longCtxAt: 272_000, longCtx: { input: 20, output: 75, cachedInput: 2, cacheWrite: 25 }, minCacheTokens: 1024 }),
   'gpt-6.1-sol': P('openai', 'mid', 2, 10, 0.1, 2.5, { ultrafast: true, longCtxAt: 272_000, longCtx: { input: 4, output: 15, cachedInput: 0.2, cacheWrite: 5 }, minCacheTokens: 1024 }),
+  'gpt-6.1-terra': P('openai', 'mid', 1, 5, 0.05, 1.25, { longCtxAt: 272_000, longCtx: { input: 2, output: 7.5, cachedInput: 0.1, cacheWrite: 2.5 }, minCacheTokens: 1024 }),
   'gpt-6-sol': P('openai', 'mid', 2, 10, 0.2, 2.5, { longCtxAt: 272_000, longCtx: { input: 4, output: 15, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   'gpt-6-luna': P('openai', 'fast', 0.1, 0.5, 0.01, 0.125, { longCtxAt: 272_000, longCtx: { input: 0.2, output: 0.75, cachedInput: 0.02, cacheWrite: 0.25 }, minCacheTokens: 1024 }),
   'gpt-5.6-sol': P('openai', 'frontier', 4, 20, 0.4, 5, { longCtxAt: 272_000, longCtx: { input: 8, output: 30, cachedInput: 0.8, cacheWrite: 10 }, minCacheTokens: 1024 }),
   'gpt-5.6-terra': P('openai', 'mid', 2, 12, 0.2, 2.5, { longCtxAt: 272_000, longCtx: { input: 4, output: 18, cachedInput: 0.4, cacheWrite: 5 }, minCacheTokens: 1024 }),
   'gpt-5.6-luna': P('openai', 'fast', 0.2, 1.2, 0.02, 0.25, { longCtxAt: 272_000, longCtx: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite: 0.5 }, minCacheTokens: 1024 }),
+  // Daybreak cyber model: access needs OpenAI approval; 400K window
+  'gpt-5.6-cyber': P('openai', 'frontier', 12.5, 75, 1.25, 15.625, { longCtxAt: 272_000, longCtx: { input: 25, output: 112.5, cachedInput: 2.5, cacheWrite: 31.25 }, minCacheTokens: 1024 }),
+  'gpt-5.3-codex': P('openai', 'mid', 1.75, 14, 0.175, undefined, { minCacheTokens: 1024 }),
   'gpt-5.5': P('openai', 'frontier', 5, 30, 0.5, undefined, { fastFactor: 2.5, longCtxAt: 272_000, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
   'gpt-5.5-pro': P('openai', 'frontier', 30, 180),
   'gpt-5.4': P('openai', 'frontier', 2.5, 15, 0.25, undefined, { longCtxAt: 272_000, longCtx: { input: 5, output: 22.5, cachedInput: 0.5 }, minCacheTokens: 1024 }),
@@ -131,7 +135,8 @@ const MODEL_ALIASES: Record<string, string> = { 'deepseek-v4-flash': 'deepseek-f
 /** Cheaper sibling for the opt-in cascade router and arbitrage math. */
 export const CASCADE_TARGET: Record<string, string> = {
   'gpt-6-astra': 'gpt-6.1-sol',
-  'gpt-6.1-sol': 'gpt-6-luna',
+  'gpt-6.1-sol': 'gpt-6.1-terra',
+  'gpt-6.1-terra': 'gpt-6-luna',
   'gpt-6-sol': 'gpt-6-luna',
   'gpt-5.6-sol': 'gpt-5.6-terra',
   'gpt-5.6-terra': 'gpt-5.6-luna',
@@ -301,6 +306,7 @@ export const MODEL_SUNSET: Record<string, Sunset> = {
   'gpt-5-nano': { retires: '2026-12-11', replacement: 'gpt-5.6-luna', announced: '2026-06-11' },
   'gpt-5-pro': { retires: '2026-12-11', replacement: 'gpt-5.6-sol', announced: '2026-06-11' },
   'gpt-5.1': { retires: '2027-04-01', replacement: 'gpt-6-sol', announced: '2026-10-01' },
+  'gpt-5.3-codex': { retires: '2027-04-01', replacement: 'gpt-6-sol', announced: '2026-10-01' },
   'gpt-5.4-nano': { retires: '2027-04-01', replacement: 'gpt-6-luna', announced: '2026-10-01' },
   'o1': { retires: '2026-10-23', replacement: 'gpt-5.6-sol', announced: '2026-04-22' },
   'o3': { retires: '2026-12-11', replacement: 'gpt-5.6-sol', announced: '2026-06-11' },
