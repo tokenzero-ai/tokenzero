@@ -8,6 +8,7 @@
 // does not expand those).
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
@@ -27,5 +28,11 @@ if (!native) {
   target = fs.readdirSync(out).filter(f => f.endsWith('.test.mjs')).map(f => path.join(out, f));
 }
 
-const r = spawnSync(process.execPath, ['--no-warnings', '--test', ...target], { stdio: 'inherit', env: process.env });
+// Tests never touch real data: every run gets its own temp data directory (the shell's TOKENZERO_DATA_DIR,
+// which on a deployed host may point at the live database, and any TOKENZERO_DB override are replaced).
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-tests-'));
+const env = { ...process.env, TOKENZERO_DATA_DIR: dataDir };
+delete env.TOKENZERO_DB;
+const r = spawnSync(process.execPath, ['--no-warnings', '--test', ...target], { stdio: 'inherit', env });
+fs.rmSync(dataDir, { recursive: true, force: true });
 process.exit(r.status ?? 1);

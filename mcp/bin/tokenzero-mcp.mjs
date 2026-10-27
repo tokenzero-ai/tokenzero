@@ -754,7 +754,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.6";
+var VERSION = "0.2.7";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -764,26 +764,36 @@ var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http
 var TOOLS = [
   {
     name: "audit_repo_token_waste",
+    title: "Audit a repo or directory for LLM token waste",
+    annotations: { title: "Audit a repo or directory for LLM token waste", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     description: "Static audit for LLM token waste: uncached static prompts and prompt templates, frontier models on extraction/classification prompts, calls in loops, unpriced models. Give `path` for a local directory (scanned on this machine, nothing uploaded; defaults to the working directory), `repo` (owner/name) for a public GitHub repo, or `diff` for a unified diff. Results are static heuristics, not measurements.",
     inputSchema: { type: "object", properties: { path: { type: "string", description: "local directory; defaults to the current working directory" }, repo: { type: "string", description: "public GitHub owner/name" }, diff: { type: "string", description: "unified diff text, e.g. from git diff" } }, additionalProperties: false }
   },
   {
     name: "calculate_model_arbitrage",
+    title: "Price a workload across models",
+    annotations: { title: "Price a workload across models", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: `Price a workload at list prices (table ${PRICING_VERSION}) for the requested model, its cheaper sibling and any extra models, with and without prompt caching. Runs locally.`,
     inputSchema: { type: "object", properties: { model: { type: "string" }, input_tokens: { type: "number" }, output_tokens: { type: "number" }, requests_per_month: { type: "number" }, static_tokens: { type: "number", description: "portion of input_tokens that is a fixed prefix (system + tools)" }, compare_to: { type: "array", items: { type: "string" } } }, required: ["model", "input_tokens", "output_tokens"], additionalProperties: false }
   },
   {
     name: "optimize_prompt_payload",
+    title: "Make a request body cache-friendly",
+    annotations: { title: "Make a request body cache-friendly", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: "Rewrite an OpenAI Chat/Responses or Anthropic Messages request body so its static prefix is provider-cacheable, and project the saving. Sends the body you pass to the TokenZero service (set TOKENZERO_URL); do not pass secrets in it.",
     inputSchema: { type: "object", properties: { body: { type: "object" }, endpoint: { type: "string", enum: ["/v1/chat/completions", "/v1/responses", "/v1/messages"] }, strategy: { type: "string", enum: ["static", "conversation"] } }, required: ["body"], additionalProperties: false }
   },
   {
     name: "workspace_metrics",
+    title: "Read a workspace savings scorecard",
+    annotations: { title: "Read a workspace savings scorecard", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: "Live value scorecard for a TokenZero workspace (GET /v1/workspaces/me/metrics): hard savings and net ROI per window, per-engine contribution, speed, parity, availability, privacy posture, per-model breakdown and one-click recommendations. Uses TOKENZERO_KEY unless a key is given; demo: true returns a labelled sample.",
     inputSchema: { type: "object", properties: { key: { type: "string", description: "workspace key (tz_live_\u2026); defaults to TOKENZERO_KEY" }, window: { type: "string", enum: ["24h", "7d", "30d", "all"] }, demo: { type: "boolean" } } }
   },
   {
     name: "provision_workspace",
+    title: "Create a free TokenZero workspace",
+    annotations: { title: "Create a free TokenZero workspace", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: "Create a TokenZero workspace and key with no form (POST /v1/workspaces on the TokenZero service). Returns the key once, the base URLs that route through it, the one-click dashboard link (key in the URL fragment, never sent to the server) and the badge URL. Free up to the monthly free tier; nothing is billed.",
     inputSchema: { type: "object", properties: { name: { type: "string", description: 'workspace name (defaults to "mcp-agent")' } }, additionalProperties: false }
   }
