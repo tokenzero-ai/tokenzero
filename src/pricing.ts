@@ -4,7 +4,7 @@
 //
 // Sources: developers.openai.com/api/docs/pricing, ai.google.dev/gemini-api/docs/pricing,
 // platform.claude.com pricing (via the Anthropic model table of the same date).
-export const PRICING_VERSION = '2026-10-27';
+export const PRICING_VERSION = '2026-10-28';
 export const PRICING_MAX_AGE_DAYS = 45;
 
 /**
@@ -181,9 +181,9 @@ const KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 export function normalizeModel(model: unknown): string | null {
   if (typeof model !== 'string' || !model) return null;
   let m = model.toLowerCase().trim();
-  // Router and cloud prefixes (OpenRouter, LiteLLM, Bedrock): "x-ai/grok-4.7", "us.anthropic.claude-opus-5-5-20260301-v1:0".
+  // Router and cloud prefixes (OpenRouter, LiteLLM, Bedrock): "x-ai/grok-4.7", "us.anthropic.claude-opus-5-5-20260301-v1:0", "global.openai.gpt-6.1-terra".
   m = m.replace(/^(openai|anthropic|google|models|vertex_ai|x-ai|xai|deepseek|bedrock|openrouter)\//, '');
-  m = m.replace(/^(us|eu|apac|global)\./, '').replace(/^(anthropic|amazon|meta|mistral)\./, '');
+  m = m.replace(/^(us|eu|apac|global)\./, '').replace(/^(anthropic|amazon|meta|mistral|openai)\./, '');
   m = m.replace(/-v\d+(?::\d+)?$/, '');
   if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
   m = m.replace(/@\d{8}$/, '');
@@ -218,6 +218,14 @@ export interface Usage {
 export interface PriceModifier { tier: string | null; factor: number }
 /** Anthropic `inference_geo: "us"` is 1.1x on every token category for Claude 4.6+ (older models reject the parameter). */
 const US_GEO_FACTOR = 1.1;
+const XAI_US_FACTOR = 1.1;
+let xaiUs: { env: string | undefined; us: boolean } | null = null;
+/** Whether the configured xAI upstream is the US regional endpoint (memoised per configured value). */
+const xaiUsUpstream = () => {
+  const env = process.env.TOKENZERO_UPSTREAM_XAI;
+  if (!xaiUs || xaiUs.env !== env) { let us = false; try { us = new URL(env || 'https://api.x.ai').hostname === 'us.api.x.ai'; } catch {} xaiUs = { env, us }; }
+  return xaiUs.us;
+};
 const usGeoEligible = (key: string) => /^claude-(fable|mythos|opus-5|opus-4-[6-9]|sonnet-5|sonnet-4-[6-9]|haiku-5)/.test(key);
 export function priceModifier(provider: Provider, body: any, response?: any, at: Date = new Date()): PriceModifier {
   if (provider === 'openai' || provider === 'openrouter') {
@@ -234,6 +242,8 @@ export function priceModifier(provider: Provider, body: any, response?: any, at:
     if (String(body?.speed ?? '').toLowerCase() === 'fast' && /^claude-opus-(5-5|5|4-8)$/.test(k)) return { tier: geo > 1 ? 'fast+us' : 'fast', factor: 2 * geo };
     if (geo > 1) return { tier: 'us', factor: geo };
   }
+  // xAI's US endpoint (https://us.api.x.ai) bills grok-4.7 and grok-4.6 at 1.1x global rates (docs.x.ai pricing, read 2026-10-28).
+  if (provider === 'xai' && xaiUsUpstream() && /^grok-4\.[67]$/.test(normalizeModel(body?.model) ?? '')) return { tier: 'us', factor: XAI_US_FACTOR };
   // DeepSeek bills by time of day: peak is Mon-Fri 01:00-04:00 and 06:00-10:00 UTC, off-peak is half price.
   if (provider === 'deepseek' && !deepseekPeak(at)) return { tier: 'off-peak', factor: 0.5 };
   return { tier: null, factor: 1 };

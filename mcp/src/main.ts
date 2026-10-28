@@ -16,7 +16,7 @@ import { PRICING_VERSION } from '../../src/pricing.ts';
 import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.2.8';
+const VERSION = '0.2.9';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
@@ -32,15 +32,15 @@ const TOOLS = [
     name: 'audit_repo_token_waste',
     title: 'Audit a repo or directory for LLM token waste',
     annotations: { title: 'Audit a repo or directory for LLM token waste', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Static audit for LLM token waste: uncached static prompts and prompt templates, frontier models on extraction/classification prompts, calls in loops, unpriced models. Give `path` for a local directory (scanned on this machine, nothing uploaded; defaults to the working directory), `repo` (owner/name) for a public GitHub repo, or `diff` for a unified diff. Results are static heuristics, not measurements.',
+    description: 'No API key needed. Static audit for LLM token waste: uncached static prompts and prompt templates, frontier models on extraction/classification prompts, calls in loops, unpriced models, and prompt-caching mis-integration (caching gated on model names, volatile values in the system prompt, random ids in history, wrong-provider cache markers, misplaced breakpoints, cost math that ignores cached tokens). Give `path` for a local directory (scanned on this machine, nothing uploaded; defaults to the working directory), `repo` (owner/name) for a public GitHub repo, or `diff` for a unified diff. Results are static heuristics, not measurements.',
     inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'local directory; defaults to the current working directory' }, repo: { type: 'string', description: 'public GitHub owner/name' }, diff: { type: 'string', description: 'unified diff text, e.g. from git diff' } }, additionalProperties: false },
   },
   {
     name: 'calculate_model_arbitrage',
     title: 'Price a workload across models',
     annotations: { title: 'Price a workload across models', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: `Price a workload at list prices (table ${PRICING_VERSION}) for the requested model, its cheaper sibling and any extra models, with and without prompt caching. Runs locally.`,
-    inputSchema: { type: 'object', properties: { model: { type: 'string' }, input_tokens: { type: 'number' }, output_tokens: { type: 'number' }, requests_per_month: { type: 'number' }, static_tokens: { type: 'number', description: 'portion of input_tokens that is a fixed prefix (system + tools)' }, compare_to: { type: 'array', items: { type: 'string' } } }, required: ['model', 'input_tokens', 'output_tokens'], additionalProperties: false },
+    description: `No API key needed; only \`model\` is required (defaults 2,000 tokens in and 400 out). Price a workload at list prices (table ${PRICING_VERSION}) for the requested model, its cheaper sibling and any extra models, with and without prompt caching. Runs locally.`,
+    inputSchema: { type: 'object', properties: { model: { type: 'string', description: 'model id, e.g. gpt-6.1-sol or claude-sonnet-5-5' }, input_tokens: { type: 'number', description: 'per request; default 2000' }, output_tokens: { type: 'number', description: 'per request; default 400' }, requests_per_month: { type: 'number' }, static_tokens: { type: 'number', description: 'portion of input_tokens that is a fixed prefix (system + tools)' }, compare_to: { type: 'array', items: { type: 'string' } } }, required: ['model'], additionalProperties: false },
   },
   {
     name: 'optimize_prompt_payload',

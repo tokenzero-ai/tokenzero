@@ -9,7 +9,7 @@ import readline from "node:readline";
 import crypto from "node:crypto";
 
 // src/pricing.ts
-var PRICING_VERSION = "2026-10-27";
+var PRICING_VERSION = "2026-10-28";
 var P = (provider, tier, input, output, cachedInput, cacheWrite, extra = {}) => ({ provider, tier, input, output, cachedInput, cacheWrite, ...extra });
 var PRICES = {
   // ---- OpenAI (standard tier, ≤272K; cache write = 30m TTL rate) ----
@@ -127,7 +127,7 @@ function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
   m = m.replace(/^(openai|anthropic|google|models|vertex_ai|x-ai|xai|deepseek|bedrock|openrouter)\//, "");
-  m = m.replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|amazon|meta|mistral)\./, "");
+  m = m.replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|amazon|meta|mistral|openai)\./, "");
   m = m.replace(/-v\d+(?::\d+)?$/, "");
   if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
   m = m.replace(/@\d{8}$/, "");
@@ -401,6 +401,121 @@ function resolveScopes(loc, masked, from, depth = 2) {
   return out;
 }
 var AUDIT_AT = new Date(process.env.TOKENZERO_AUDIT_AT || Date.now());
+var CACHE_DIRECTIVE = /cache_control|cacheControl|cachePoint|cache_point|prompt_cache_key|promptCacheKey|cachedContent|cached_content|supports?_?(?:prompt_?)?caching|supports?(?:Prompt)?Caching|enable_?(?:prompt_?)?cach(?:e|ing)|(?:prompt_?)?cache_?enabled|(?:prompt)?[cC]acheEnabled/;
+var MODEL_GATE = /\b(?:if|elif|when|case)\b|&&|\|\||\?/;
+var MODEL_NAME_TEST = /\b(?:model|model_?id|model_?name|modelId|modelName|deployment)\w*\s*(?:\.(?:startswith|startsWith|endswith|endsWith|includes|lower\(\)\.startswith|toLowerCase\(\)\.(?:startsWith|includes))\s*\(\s*\(?\s*["'`](?:claude|anthropic|gpt|gemini|o\d|deepseek|grok|qwen|minimax)|(?:===?|==)\s*["'`](?:claude|anthropic|gpt|gemini|deepseek|grok)[\w.-]*["'`])|["'`](?:claude|anthropic|gemini|gpt)[\w.-]*["'`]\s+in\s+(?:\w+\.)*(?:model|model_?id|model_?name)\b|\/\^?(?:claude|anthropic|gpt|gemini)[^/\n]*\/[a-z]*\.test\(\s*(?:\w+\.)*(?:model|modelId|modelName)/i;
+var VOLATILE_CALL = /\b(?:datetime\.(?:now|utcnow)\(|date\.today\(|time\.time\(|time\.strftime\(|Date\.now\(|new Date\(\s*\)|\.toISOString\(|\.isoformat\(|\.toLocale(?:Date|Time)?String\(|uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\()/;
+var INTERPOLATES = /\bf["']|\$\{|\.format\(|%\s*\(|["']\s*\+|\+\s*["']|`/;
+var SYSTEM_CTX = /\bsystem(?:_?prompt|Prompt|_?message|Message|_?instructions?)?\b\s*[:=(]|["']role["']\s*:\s*["']system["']|\brole\s*:\s*["']system["']|\binstructions\s*[:=]/i;
+var RANDOM_ID = /(?:\b(?:tool_call_id|toolCallId|call_id|callId|tool_use_id|toolUseId)\b|["']id["'])\s*[:=]\s*[^,\n]*?(?:uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\(|shortuuid)/;
+var SET_TOOLS = /\btools?\s*=\s*\[[^\]\n]*\bfor\s+\w+\s+in\s+(?:set\(|\w*_?set\b|\w+\.keys\(\)\s*\|)/;
+var OPENAI_COMPAT = /\bfrom\s+openai\s+import|\bimport\s+openai\b|from\s+["']openai["']|require\(\s*["']openai["']\s*\)|\bOpenAI\(|openrouter\.ai|chat\.completions\.create|litellm\.completion/;
+var ANTHROPIC_SDK = /\bfrom\s+anthropic\s+import|\bimport\s+anthropic\b|@anthropic-ai\/sdk|\bAnthropic\(|messages\.create\(/;
+var NON_CLAUDE_MODEL = /["'`](?:openai\/|google\/|deepseek\/|x-ai\/|meta-llama\/|mistralai\/|qwen\/)?(?:gpt-[\w.-]+|o[1-9][\w.-]*|gemini-[\w.-]+|deepseek-[\w.-]+|grok-[\w.-]+|llama[\w.-]*|mistral[\w.-]*|qwen[\w.-]*)["'`]/i;
+var USER_ROLE = /["']?role["']?\s*:\s*["']user["']/;
+var USAGE_FIELD = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b/;
+var CACHE_USAGE_FIELD = /cache_read_input_tokens|cache_creation_input_tokens|cacheReadInputTokens|cacheCreationInputTokens|cached_tokens|cachedTokens|cachedContentTokenCount|cached_content_token_count|prompt_tokens_details|promptTokensDetails|cache_read|cacheRead|cache_write|cacheWrite|cacheReadTokens|cacheWriteTokens/;
+var COST_MATH = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b[^;\n]*(?:\*\s*[\w.[\]'"]*(?:price|rate|cost|per_?m|perM|usd)|\/\s*1[_,]?000[_,]?000|\/\s*1e6)|(?:price|rate|cost|per_?m|perM|usd)\w*\s*\*\s*[\w.[\]'"]*\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens)\b/i;
+var ZEROED_CACHE_USAGE = /\b(?:cache_creation_input_tokens|cache_read_input_tokens|cacheCreationInputTokens|cacheReadInputTokens|cached_tokens|cachedTokens)["']?\s*[:=]\s*0\b(?!\s*(?:if|\?|\|\||or\b|&&))/;
+var isComment = (raw) => /^\s*(?:#|\/\/|\*|\/\*)/.test(raw);
+function cacheLint(path3, lines, masked) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (k, fd) => {
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push({ file: path3, ...fd });
+    }
+  };
+  const near = (i, re, before, after) => lines.slice(Math.max(0, i - before), Math.min(lines.length, i + after + 1)).some((l) => !isComment(l) && re.test(l));
+  const src = lines.join("\n");
+  const hasDirective = CACHE_DIRECTIVE.test(src);
+  const nonClaudeViaCompat = OPENAI_COMPAT.test(src) && !ANTHROPIC_SDK.test(src) && NON_CLAUDE_MODEL.test(src);
+  const ownerOf = (i) => {
+    for (let k = i; k >= Math.max(0, i - 6); k--) {
+      const l = lines[k], u = l.search(USER_ROLE), p = l.search(/["']role["']\s*:\s*["'](?:system|developer)["']|\brole\s*:\s*["'](?:system|developer)["']|\bsystem\s*[=:]|\btools?\s*[=:]|["'](?:system|tools)["']\s*:/);
+      if (u >= 0 || p >= 0) return u >= 0 && (p < 0 || (k === i ? u < l.search(/cache_control|cacheControl/) && u > p : u > p)) ? "user" : "prefix";
+    }
+    return null;
+  };
+  const markers = lines.map((l, i) => !isComment(l) && /cache_control|cacheControl|cachePoint/.test(l) ? i : -1).filter((i) => i >= 0);
+  const systemMarked = markers.some((i) => ownerOf(i) === "prefix");
+  const USER_MARK = /["']?role["']?\s*:\s*["']user["']|\bcontents\s*[:=]|\bmessages\s*[:=]|\binput\s*[:=]/;
+  const inSystemValue = (i) => {
+    const raw = lines[i], v = raw.search(VOLATILE_CALL), sp = raw.search(SYSTEM_CTX), up = raw.search(USER_MARK);
+    if (sp >= 0 && sp < v) return !(up > sp && up < v);
+    if (up >= 0 && up < v) return false;
+    for (let k = i - 1; k >= Math.max(0, i - 4); k--) {
+      if (isComment(lines[k])) continue;
+      const ks = lines[k].search(SYSTEM_CTX), ku = lines[k].search(USER_MARK);
+      if (ks >= 0) return !(ku > ks);
+      if (ku >= 0) return false;
+    }
+    return false;
+  };
+  lines.forEach((raw, i) => {
+    if (isComment(raw)) return;
+    const code = masked[i] ?? "";
+    if (hasDirective && MODEL_GATE.test(code + raw) && MODEL_NAME_TEST.test(raw) && near(i, CACHE_DIRECTIVE, 3, 10)) add("gating", {
+      severity: "medium",
+      line: i + 1,
+      title: "Prompt caching gated on a hardcoded model-name check",
+      detail: 'Caching is turned on only when the model id matches a fixed name or prefix. When a provider renames a model, adds a "-latest" alias or you switch to a new cacheable model, the check stops matching and every call quietly pays the full input rate. This is the most common prompt-caching defect in agent code (31% of 120 studied defects, arXiv:2610.34817).',
+      fix: 'Decide caching from the provider (or a capability table that defaults to "on"), not from the model string; or route through TokenZero, which applies the right cache markers for every priced model.',
+      est_savings_pct: 10
+    });
+    if (VOLATILE_CALL.test(raw) && INTERPOLATES.test(raw) && inSystemValue(i) && !RANDOM_ID.test(raw)) add("volatile", {
+      severity: "medium",
+      line: i + 1,
+      title: "Volatile value (time, date or random id) interpolated into the system prompt",
+      detail: "A value that changes on every request is written into the system prompt, which sits at the start of the cached prefix. Provider caches match byte-for-byte from the start, so no request ever reuses the previous one and the cache discount is lost on the whole prompt (11% of studied defects, arXiv:2610.34817).",
+      fix: "Keep the system prompt static. Put the current time or request id in the last user message (or round it to the day if it must stay in the system prompt).",
+      est_savings_pct: 15
+    });
+    if (RANDOM_ID.test(raw) || SET_TOOLS.test(raw)) add("serialization", {
+      severity: "low",
+      line: i + 1,
+      title: RANDOM_ID.test(raw) ? "Random ids generated for messages or tool calls in the prompt" : "Tool list built from an unordered set",
+      detail: RANDOM_ID.test(raw) ? "An id minted with a random generator is written into the conversation. If it is regenerated when the history is rebuilt, the same turn serializes to different bytes and the cached prefix stops matching (nondeterministic serialization, 8% of studied defects, arXiv:2610.34817)." : "Iterating a set gives no stable order, so the same tools can serialize in a different order across processes and break the cached prefix (nondeterministic serialization, 8% of studied defects, arXiv:2610.34817).",
+      fix: RANDOM_ID.test(raw) ? "Mint ids once, store them with the message, and reuse the stored value; never regenerate them per request." : "Sort the tools (for example by name) before sending them.",
+      est_savings_pct: 5
+    });
+    if (nonClaudeViaCompat && /cache_control|cacheControl/.test(raw)) add("marker", {
+      severity: "medium",
+      line: i + 1,
+      title: "Anthropic cache_control marker sent through an OpenAI-compatible client to non-Claude models",
+      detail: "This file uses an OpenAI-compatible client and names non-Claude models, but attaches Anthropic-style `cache_control` markers. Providers that do not accept the field reject the request or ignore it, so calls fail or run uncached (incompatible marker, 8% of studied defects, arXiv:2610.34817).",
+      fix: "Attach `cache_control` only for Claude models; OpenAI, Gemini and DeepSeek cache stable prefixes automatically (use `prompt_cache_key` on OpenAI). TokenZero adds the right marker per provider.",
+      est_savings_pct: 0
+    });
+    if (!systemMarked && /cache_control|cacheControl/.test(raw) && ownerOf(i) === "user" && lines.slice(Math.max(0, i - 4), i + 2).some((l) => INTERPOLATES.test(l) || /\b(?:user_input|query|question|request|input)\b/.test(l))) add("misplaced", {
+      severity: "low",
+      line: i + 1,
+      title: "Cache breakpoint on per-request user content, none on the system prompt or tools",
+      detail: "The only `cache_control` marker is on a user message whose text changes per request, while the static system prompt and tools are unmarked. Each call writes a new cache entry (billed at the cache-write surcharge) that the next call cannot read (misplaced marker, 3% of studied defects, arXiv:2610.34817). In multi-turn chats a breakpoint on the latest turn is fine as long as the system prompt or tools also carry one.",
+      fix: "Add a breakpoint after the last tool or the system prompt; keep the per-turn one only for long conversations.",
+      est_savings_pct: 5
+    });
+    if (ZEROED_CACHE_USAGE.test(code)) add("usage", {
+      severity: "medium",
+      line: i + 1,
+      title: "Cached-token usage hardcoded to zero",
+      detail: "Cache-read or cache-write token counts are set to 0 instead of read from the response, so cost reports and budgets misstate spend (usage miscount, 19% of studied defects, arXiv:2610.34817).",
+      fix: "Read `cache_read_input_tokens` / `cache_creation_input_tokens` (Anthropic), `prompt_tokens_details.cached_tokens` (OpenAI) or `cachedContentTokenCount` (Gemini) from the usage object.",
+      est_savings_pct: 0
+    });
+  });
+  const costLine = lines.findIndex((l) => !isComment(l) && COST_MATH.test(l));
+  if (costLine >= 0 && !CACHE_USAGE_FIELD.test(src)) add("usage", {
+    severity: "medium",
+    line: costLine + 1,
+    title: "Cost math from token usage ignores cached tokens",
+    detail: "Spend is computed from input/prompt token counts with no reference to cached tokens anywhere in this file. Anthropic reports cache reads and writes separately from `input_tokens` (so this undercounts writes and misses the read discount); OpenAI includes cached tokens in `prompt_tokens` (so this overcounts). Either way reported cost is wrong (usage miscount, 19% of studied defects, arXiv:2610.34817).",
+    fix: "Price cache reads, cache writes and uncached input separately from the provider usage fields, or read the per-request cost from TokenZero receipts.",
+    est_savings_pct: 0
+  });
+  return out;
+}
 function analyzeFiles(files, repo = null, manifests2 = []) {
   const findings = [];
   const callSites = [];
@@ -563,6 +678,9 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
       findings.push(...local);
       siteFindings.push(local);
     });
+    if (callLines.length || hasCacheControl || USAGE_FIELD.test(src)) {
+      for (const fd of cacheLint(f.path, lines, masked)) findings.push({ ...fd, severity: kind === "library" || illustrative ? DOWN[fd.severity] : fd.severity });
+    }
   }
   const libTokens = promptLibrary.reduce((a, p) => a + p.tokens, 0);
   if (callSites.length && !repoCaches && libTokens >= 1024 && !findings.some((f) => /static prompt tokens/.test(f.title))) {
@@ -671,10 +789,11 @@ async function fetchRepoFiles(repo, opts = {}) {
 }
 
 // src/arbitrage.ts
+var ARBITRAGE_DEFAULTS = { input_tokens: 2e3, output_tokens: 400 };
 function modelArbitrage(args) {
   const key = normalizeModel(args.model);
   if (!key) throw new Error(`unknown model ${args.model}; known: ${Object.keys(PRICES).join(", ")}`);
-  const n = args.requests_per_month ?? 1e4, inp = args.input_tokens, out = args.output_tokens, st = Math.min(inp, args.static_tokens ?? 0);
+  const n = args.requests_per_month ?? 1e4, inp = args.input_tokens ?? ARBITRAGE_DEFAULTS.input_tokens, out = args.output_tokens ?? ARBITRAGE_DEFAULTS.output_tokens, st = Math.min(inp, args.static_tokens ?? 0);
   const rowFor = (m) => {
     const p = priceFor(m);
     const base = costOf(m, { input: inp, output: out });
@@ -685,6 +804,7 @@ function modelArbitrage(args) {
   const rows = [...new Set(models)].map(rowFor);
   return {
     pricing_version: PRICING_VERSION,
+    workload: { input_tokens: inp, output_tokens: out, requests_per_month: n, ...args.input_tokens == null || args.output_tokens == null ? { defaults_used: true } : {} },
     requested: rows[0],
     alternatives: rows.slice(1).map((r) => ({ ...r, savings_pct_vs_requested: Math.round((1 - r.per_request_usd / rows[0].per_request_usd) * 1e3) / 10 })),
     caveat: "List prices. Cheaper models need an eval before swapping; TokenZero cascade routing is opt-in and advisory by default; an opt-in shadow parity monitor is coming."
@@ -760,7 +880,7 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.8";
+var VERSION = "0.2.9";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -772,15 +892,15 @@ var TOOLS = [
     name: "audit_repo_token_waste",
     title: "Audit a repo or directory for LLM token waste",
     annotations: { title: "Audit a repo or directory for LLM token waste", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: "Static audit for LLM token waste: uncached static prompts and prompt templates, frontier models on extraction/classification prompts, calls in loops, unpriced models. Give `path` for a local directory (scanned on this machine, nothing uploaded; defaults to the working directory), `repo` (owner/name) for a public GitHub repo, or `diff` for a unified diff. Results are static heuristics, not measurements.",
+    description: "No API key needed. Static audit for LLM token waste: uncached static prompts and prompt templates, frontier models on extraction/classification prompts, calls in loops, unpriced models, and prompt-caching mis-integration (caching gated on model names, volatile values in the system prompt, random ids in history, wrong-provider cache markers, misplaced breakpoints, cost math that ignores cached tokens). Give `path` for a local directory (scanned on this machine, nothing uploaded; defaults to the working directory), `repo` (owner/name) for a public GitHub repo, or `diff` for a unified diff. Results are static heuristics, not measurements.",
     inputSchema: { type: "object", properties: { path: { type: "string", description: "local directory; defaults to the current working directory" }, repo: { type: "string", description: "public GitHub owner/name" }, diff: { type: "string", description: "unified diff text, e.g. from git diff" } }, additionalProperties: false }
   },
   {
     name: "calculate_model_arbitrage",
     title: "Price a workload across models",
     annotations: { title: "Price a workload across models", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: `Price a workload at list prices (table ${PRICING_VERSION}) for the requested model, its cheaper sibling and any extra models, with and without prompt caching. Runs locally.`,
-    inputSchema: { type: "object", properties: { model: { type: "string" }, input_tokens: { type: "number" }, output_tokens: { type: "number" }, requests_per_month: { type: "number" }, static_tokens: { type: "number", description: "portion of input_tokens that is a fixed prefix (system + tools)" }, compare_to: { type: "array", items: { type: "string" } } }, required: ["model", "input_tokens", "output_tokens"], additionalProperties: false }
+    description: `No API key needed; only \`model\` is required (defaults 2,000 tokens in and 400 out). Price a workload at list prices (table ${PRICING_VERSION}) for the requested model, its cheaper sibling and any extra models, with and without prompt caching. Runs locally.`,
+    inputSchema: { type: "object", properties: { model: { type: "string", description: "model id, e.g. gpt-6.1-sol or claude-sonnet-5-5" }, input_tokens: { type: "number", description: "per request; default 2000" }, output_tokens: { type: "number", description: "per request; default 400" }, requests_per_month: { type: "number" }, static_tokens: { type: "number", description: "portion of input_tokens that is a fixed prefix (system + tools)" }, compare_to: { type: "array", items: { type: "string" } } }, required: ["model"], additionalProperties: false }
   },
   {
     name: "optimize_prompt_payload",

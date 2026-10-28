@@ -14,4 +14,4 @@ startCommand:
         description: Workspace key (tz_live_…) for workspace_metrics; optional
     required: []
   commandFunction: |-
-    (config) => ({ command: 'npx', args: ['-y', '@tokenzero/mcp@0.2.8'], env: { TOKENZERO_URL: config.tokenzeroUrl || 'https://tokenzero.sh', ...(config.tokenzeroKey ? { TOKENZERO_KEY: config.tokenzeroKey } : {}) } })
+    (config) => ({ command: 'npx', args: ['-y', '@tokenzero/mcp@0.2.9'], env: { TOKENZERO_URL: config.tokenzeroUrl || 'https://tokenzero.sh', ...(config.tokenzeroKey ? { TOKENZERO_KEY: config.tokenzeroKey } : {}) } })

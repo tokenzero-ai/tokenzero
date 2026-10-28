@@ -233,6 +233,115 @@ function resolveScopes(loc: ReturnType<typeof makeLocator>, masked: string[], fr
 
 /** Audits are dated by wall clock so sunset findings age correctly; tests pin it. */
 export const AUDIT_AT = new Date(process.env.TOKENZERO_AUDIT_AT || Date.now());
+// ---- prompt-caching mis-integration ------------------------------------------------------
+// Six of the eight root causes in Zhang et al., "Silent and Costly: Characterizing and Detecting
+// Prompt-Caching Mis-Integration in LLM Agents" (arXiv:2610.34817, Table II, 120 defects):
+// model-name gating 31%, usage miscount 19%, volatile value 11%, incompatible marker 8%,
+// nondeterministic serialization 8%, misplaced marker 3%. Line-pattern rules, one finding per
+// class per file; prefix reassembly and cross-turn mutation need data flow and are not covered.
+const CACHE_DIRECTIVE = /cache_control|cacheControl|cachePoint|cache_point|prompt_cache_key|promptCacheKey|cachedContent|cached_content|supports?_?(?:prompt_?)?caching|supports?(?:Prompt)?Caching|enable_?(?:prompt_?)?cach(?:e|ing)|(?:prompt_?)?cache_?enabled|(?:prompt)?[cC]acheEnabled/;
+const MODEL_GATE = /\b(?:if|elif|when|case)\b|&&|\|\||\?/;
+const MODEL_NAME_TEST = /\b(?:model|model_?id|model_?name|modelId|modelName|deployment)\w*\s*(?:\.(?:startswith|startsWith|endswith|endsWith|includes|lower\(\)\.startswith|toLowerCase\(\)\.(?:startsWith|includes))\s*\(\s*\(?\s*["'`](?:claude|anthropic|gpt|gemini|o\d|deepseek|grok|qwen|minimax)|(?:===?|==)\s*["'`](?:claude|anthropic|gpt|gemini|deepseek|grok)[\w.-]*["'`])|["'`](?:claude|anthropic|gemini|gpt)[\w.-]*["'`]\s+in\s+(?:\w+\.)*(?:model|model_?id|model_?name)\b|\/\^?(?:claude|anthropic|gpt|gemini)[^/\n]*\/[a-z]*\.test\(\s*(?:\w+\.)*(?:model|modelId|modelName)/i;
+const VOLATILE_CALL = /\b(?:datetime\.(?:now|utcnow)\(|date\.today\(|time\.time\(|time\.strftime\(|Date\.now\(|new Date\(\s*\)|\.toISOString\(|\.isoformat\(|\.toLocale(?:Date|Time)?String\(|uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\()/;
+const INTERPOLATES = /\bf["']|\$\{|\.format\(|%\s*\(|["']\s*\+|\+\s*["']|`/;
+const SYSTEM_CTX = /\bsystem(?:_?prompt|Prompt|_?message|Message|_?instructions?)?\b\s*[:=(]|["']role["']\s*:\s*["']system["']|\brole\s*:\s*["']system["']|\binstructions\s*[:=]/i;
+const RANDOM_ID = /(?:\b(?:tool_call_id|toolCallId|call_id|callId|tool_use_id|toolUseId)\b|["']id["'])\s*[:=]\s*[^,\n]*?(?:uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\(|shortuuid)/;
+const SET_TOOLS = /\btools?\s*=\s*\[[^\]\n]*\bfor\s+\w+\s+in\s+(?:set\(|\w*_?set\b|\w+\.keys\(\)\s*\|)/;
+const OPENAI_COMPAT = /\bfrom\s+openai\s+import|\bimport\s+openai\b|from\s+["']openai["']|require\(\s*["']openai["']\s*\)|\bOpenAI\(|openrouter\.ai|chat\.completions\.create|litellm\.completion/;
+const ANTHROPIC_SDK = /\bfrom\s+anthropic\s+import|\bimport\s+anthropic\b|@anthropic-ai\/sdk|\bAnthropic\(|messages\.create\(/;
+const NON_CLAUDE_MODEL = /["'`](?:openai\/|google\/|deepseek\/|x-ai\/|meta-llama\/|mistralai\/|qwen\/)?(?:gpt-[\w.-]+|o[1-9][\w.-]*|gemini-[\w.-]+|deepseek-[\w.-]+|grok-[\w.-]+|llama[\w.-]*|mistral[\w.-]*|qwen[\w.-]*)["'`]/i;
+const USER_ROLE = /["']?role["']?\s*:\s*["']user["']/;
+export const USAGE_FIELD = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b/;
+const CACHE_USAGE_FIELD = /cache_read_input_tokens|cache_creation_input_tokens|cacheReadInputTokens|cacheCreationInputTokens|cached_tokens|cachedTokens|cachedContentTokenCount|cached_content_token_count|prompt_tokens_details|promptTokensDetails|cache_read|cacheRead|cache_write|cacheWrite|cacheReadTokens|cacheWriteTokens/;
+const COST_MATH = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b[^;\n]*(?:\*\s*[\w.[\]'"]*(?:price|rate|cost|per_?m|perM|usd)|\/\s*1[_,]?000[_,]?000|\/\s*1e6)|(?:price|rate|cost|per_?m|perM|usd)\w*\s*\*\s*[\w.[\]'"]*\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens)\b/i;
+const ZEROED_CACHE_USAGE = /\b(?:cache_creation_input_tokens|cache_read_input_tokens|cacheCreationInputTokens|cacheReadInputTokens|cached_tokens|cachedTokens)["']?\s*[:=]\s*0\b(?!\s*(?:if|\?|\|\||or\b|&&))/;
+const isComment = (raw: string) => /^\s*(?:#|\/\/|\*|\/\*)/.test(raw);
+
+export function cacheLint(path: string, lines: string[], masked: string[]): Finding[] {
+  const out: Finding[] = [];
+  const seen = new Set<string>();
+  const add = (k: string, fd: Omit<Finding, 'file'>) => { if (!seen.has(k)) { seen.add(k); out.push({ file: path, ...fd }); } };
+  const near = (i: number, re: RegExp, before: number, after: number) => lines.slice(Math.max(0, i - before), Math.min(lines.length, i + after + 1)).some(l => !isComment(l) && re.test(l));
+  const src = lines.join('\n');
+  const hasDirective = CACHE_DIRECTIVE.test(src);
+  const nonClaudeViaCompat = OPENAI_COMPAT.test(src) && !ANTHROPIC_SDK.test(src) && NON_CLAUDE_MODEL.test(src);
+  // Which block a marker sits in: the nearest user role or system/tools key at or above it (up to 6 lines).
+  const ownerOf = (i: number): 'user' | 'prefix' | null => {
+    for (let k = i; k >= Math.max(0, i - 6); k--) {
+      const l = lines[k], u = l.search(USER_ROLE), p = l.search(/["']role["']\s*:\s*["'](?:system|developer)["']|\brole\s*:\s*["'](?:system|developer)["']|\bsystem\s*[=:]|\btools?\s*[=:]|["'](?:system|tools)["']\s*:/);
+      if (u >= 0 || p >= 0) return u >= 0 && (p < 0 || (k === i ? u < l.search(/cache_control|cacheControl/) && u > p : u > p)) ? 'user' : 'prefix';
+    }
+    return null;
+  };
+  const markers = lines.map((l, i) => !isComment(l) && /cache_control|cacheControl|cachePoint/.test(l) ? i : -1).filter(i => i >= 0);
+  const systemMarked = markers.some(i => ownerOf(i) === 'prefix');
+
+  // The volatile call must sit in the system value: after a system marker and before any user/content marker,
+  // on its own line or below a system marker with no user turn in between.
+  const USER_MARK = /["']?role["']?\s*:\s*["']user["']|\bcontents\s*[:=]|\bmessages\s*[:=]|\binput\s*[:=]/;
+  const inSystemValue = (i: number) => {
+    const raw = lines[i], v = raw.search(VOLATILE_CALL), sp = raw.search(SYSTEM_CTX), up = raw.search(USER_MARK);
+    if (sp >= 0 && sp < v) return !(up > sp && up < v);
+    if (up >= 0 && up < v) return false;
+    for (let k = i - 1; k >= Math.max(0, i - 4); k--) {
+      if (isComment(lines[k])) continue;
+      const ks = lines[k].search(SYSTEM_CTX), ku = lines[k].search(USER_MARK);
+      if (ks >= 0) return !(ku > ks);
+      if (ku >= 0) return false;
+    }
+    return false;
+  };
+  lines.forEach((raw, i) => {
+    if (isComment(raw)) return;
+    const code = masked[i] ?? '';
+    // (1) Caching switched on by a hardcoded model-name check: a renamed or new model silently loses it.
+    if (hasDirective && MODEL_GATE.test(code + raw) && MODEL_NAME_TEST.test(raw) && near(i, CACHE_DIRECTIVE, 3, 10)) add('gating', {
+      severity: 'medium', line: i + 1, title: 'Prompt caching gated on a hardcoded model-name check',
+      detail: 'Caching is turned on only when the model id matches a fixed name or prefix. When a provider renames a model, adds a "-latest" alias or you switch to a new cacheable model, the check stops matching and every call quietly pays the full input rate. This is the most common prompt-caching defect in agent code (31% of 120 studied defects, arXiv:2610.34817).',
+      fix: 'Decide caching from the provider (or a capability table that defaults to "on"), not from the model string; or route through TokenZero, which applies the right cache markers for every priced model.',
+      est_savings_pct: 10 });
+    // (2) A per-request value inside the cached prefix: the prefix never repeats, so it is never read from cache.
+    if (VOLATILE_CALL.test(raw) && INTERPOLATES.test(raw) && inSystemValue(i) && !RANDOM_ID.test(raw)) add('volatile', {
+      severity: 'medium', line: i + 1, title: 'Volatile value (time, date or random id) interpolated into the system prompt',
+      detail: 'A value that changes on every request is written into the system prompt, which sits at the start of the cached prefix. Provider caches match byte-for-byte from the start, so no request ever reuses the previous one and the cache discount is lost on the whole prompt (11% of studied defects, arXiv:2610.34817).',
+      fix: 'Keep the system prompt static. Put the current time or request id in the last user message (or round it to the day if it must stay in the system prompt).',
+      est_savings_pct: 15 });
+    // (3) Bytes that differ for identical content: random ids rewritten into history, tools built from an unordered set.
+    if (RANDOM_ID.test(raw) || SET_TOOLS.test(raw)) add('serialization', {
+      severity: 'low', line: i + 1, title: RANDOM_ID.test(raw) ? 'Random ids generated for messages or tool calls in the prompt' : 'Tool list built from an unordered set',
+      detail: RANDOM_ID.test(raw)
+        ? 'An id minted with a random generator is written into the conversation. If it is regenerated when the history is rebuilt, the same turn serializes to different bytes and the cached prefix stops matching (nondeterministic serialization, 8% of studied defects, arXiv:2610.34817).'
+        : 'Iterating a set gives no stable order, so the same tools can serialize in a different order across processes and break the cached prefix (nondeterministic serialization, 8% of studied defects, arXiv:2610.34817).',
+      fix: RANDOM_ID.test(raw) ? 'Mint ids once, store them with the message, and reuse the stored value; never regenerate them per request.' : 'Sort the tools (for example by name) before sending them.',
+      est_savings_pct: 5 });
+    // (4) An Anthropic-format marker sent to a model that does not accept it.
+    if (nonClaudeViaCompat && /cache_control|cacheControl/.test(raw)) add('marker', {
+      severity: 'medium', line: i + 1, title: 'Anthropic cache_control marker sent through an OpenAI-compatible client to non-Claude models',
+      detail: 'This file uses an OpenAI-compatible client and names non-Claude models, but attaches Anthropic-style `cache_control` markers. Providers that do not accept the field reject the request or ignore it, so calls fail or run uncached (incompatible marker, 8% of studied defects, arXiv:2610.34817).',
+      fix: 'Attach `cache_control` only for Claude models; OpenAI, Gemini and DeepSeek cache stable prefixes automatically (use `prompt_cache_key` on OpenAI). TokenZero adds the right marker per provider.',
+      est_savings_pct: 0 });
+    // (5) The only cache breakpoint sits on per-request user content, not on the stable prefix.
+    if (!systemMarked && /cache_control|cacheControl/.test(raw) && ownerOf(i) === 'user' && lines.slice(Math.max(0, i - 4), i + 2).some(l => INTERPOLATES.test(l) || /\b(?:user_input|query|question|request|input)\b/.test(l))) add('misplaced', {
+      severity: 'low', line: i + 1, title: 'Cache breakpoint on per-request user content, none on the system prompt or tools',
+      detail: 'The only `cache_control` marker is on a user message whose text changes per request, while the static system prompt and tools are unmarked. Each call writes a new cache entry (billed at the cache-write surcharge) that the next call cannot read (misplaced marker, 3% of studied defects, arXiv:2610.34817). In multi-turn chats a breakpoint on the latest turn is fine as long as the system prompt or tools also carry one.',
+      fix: 'Add a breakpoint after the last tool or the system prompt; keep the per-turn one only for long conversations.',
+      est_savings_pct: 5 });
+    // (6) Cost or usage math that ignores cached tokens.
+    if (ZEROED_CACHE_USAGE.test(code)) add('usage', {
+      severity: 'medium', line: i + 1, title: 'Cached-token usage hardcoded to zero',
+      detail: 'Cache-read or cache-write token counts are set to 0 instead of read from the response, so cost reports and budgets misstate spend (usage miscount, 19% of studied defects, arXiv:2610.34817).',
+      fix: 'Read `cache_read_input_tokens` / `cache_creation_input_tokens` (Anthropic), `prompt_tokens_details.cached_tokens` (OpenAI) or `cachedContentTokenCount` (Gemini) from the usage object.',
+      est_savings_pct: 0 });
+  });
+  const costLine = lines.findIndex(l => !isComment(l) && COST_MATH.test(l));
+  if (costLine >= 0 && !CACHE_USAGE_FIELD.test(src)) add('usage', {
+    severity: 'medium', line: costLine + 1, title: 'Cost math from token usage ignores cached tokens',
+    detail: 'Spend is computed from input/prompt token counts with no reference to cached tokens anywhere in this file. Anthropic reports cache reads and writes separately from `input_tokens` (so this undercounts writes and misses the read discount); OpenAI includes cached tokens in `prompt_tokens` (so this overcounts). Either way reported cost is wrong (usage miscount, 19% of studied defects, arXiv:2610.34817).',
+    fix: 'Price cache reads, cache writes and uncached input separately from the provider usage fields, or read the per-request cost from TokenZero receipts.',
+    est_savings_pct: 0 });
+  return out;
+}
+
 export function analyzeFiles(files: SourceFile[], repo: string | null = null, manifests: SourceFile[] = []): AuditReport {
   const findings: Finding[] = [];
   const callSites: CallSite[] = [];
@@ -411,6 +520,11 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       findings.push(...local);
       siteFindings.push(local);
     });
+
+    // Prompt-caching mis-integration (CacheLint taxonomy): report-only, kept out of the estimate.
+    if (callLines.length || hasCacheControl || USAGE_FIELD.test(src)) {
+      for (const fd of cacheLint(f.path, lines, masked)) findings.push({ ...fd, severity: kind === 'library' || illustrative ? DOWN[fd.severity] : fd.severity });
+    }
   }
 
   // Repo-level: large prompt templates defined away from the call sites, with no caching
