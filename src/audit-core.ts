@@ -185,7 +185,10 @@ function makeLocator(masked: string[]) {
   return { text, starts, lineOf };
 }
 
-const ASSIGN = (name: string) => new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var|final|static|private|public|readonly|\\s)*\\s*(?:self\\.|this\\.)?${name}\\s*(?::[^=\\n]+)?=(?![=>])`);
+// Each keyword must be followed by whitespace and whitespace is matched in one place only: the old form
+// (`(?:const|…|\\s)*\\s*`) backtracked cubically on long all-blank lines (masked string literals), which
+// froze a worker for minutes on one file and took prod down for 8 minutes on 2026-10-31 (#2021).
+const ASSIGN = (name: string) => new RegExp(`^[ \\t]*(?:export[ \\t]+)?(?:(?:const|let|var|final|static|private|public|readonly)[ \\t]+)*(?:self\\.|this\\.)?${name}[ \\t]*(?::[^=\\n]{0,200})?=(?![=>])`);
 const KEYWORDS = new Set(['self', 'this', 'await', 'async', 'return', 'model', 'messages', 'role', 'content', 'system', 'user', 'true', 'false', 'True', 'False', 'None', 'null', 'undefined', 'new', 'max_tokens', 'temperature', 'client', 'resp', 'response']);
 
 /** The statement assigned at `line`: from its `=` to the end of the balanced expression. */
@@ -245,6 +248,12 @@ const MODEL_NAME_TEST = /\b(?:model|model_?id|model_?name|modelId|modelName|depl
 const VOLATILE_CALL = /\b(?:datetime\.(?:now|utcnow)\(|date\.today\(|time\.time\(|time\.strftime\(|Date\.now\(|new Date\(\s*\)|\.toISOString\(|\.isoformat\(|\.toLocale(?:Date|Time)?String\(|uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\()/;
 const INTERPOLATES = /\bf["']|\$\{|\.format\(|%\s*\(|["']\s*\+|\+\s*["']|`/;
 const SYSTEM_CTX = /\bsystem(?:_?prompt|Prompt|_?message|Message|_?instructions?)?\b\s*[:=(]|["']role["']\s*:\s*["']system["']|\brole\s*:\s*["']system["']|\binstructions\s*[:=]/i;
+// Linear, bounded patterns only (#2021): no nested or overlapping quantifiers.
+const HARDCODED_KEY = /["'`]((?:sk-ant-api\d\d-|sk-ant-|sk-proj-|sk-or-v1-|sk-svcacct-)[A-Za-z0-9_-]{20,200}|sk-[A-Za-z0-9]{40,200}|AIza[0-9A-Za-z_-]{35}|xai-[A-Za-z0-9]{40,200}|gsk_[A-Za-z0-9]{40,200}|csk-[A-Za-z0-9]{30,200}|tz_live_[A-Za-z0-9_-]{24,200})["'`]/;
+const KEY_PLACEHOLDER = /x{6,}|X{6,}|0{8,}|1234567|abcdef|your|example|placeholder|dummy|fake|test|redacted|\.\.\./i;
+const keyProvider = (k: string) => k.startsWith('sk-ant-') ? 'Anthropic' : k.startsWith('sk-or-') ? 'OpenRouter' : k.startsWith('AIza') ? 'Google' : k.startsWith('xai-') ? 'xAI' : k.startsWith('gsk_') ? 'Groq' : k.startsWith('csk-') ? 'Cerebras' : k.startsWith('tz_live_') ? 'TokenZero' : 'OpenAI';
+// An f-string / template literal / .format string whose first characters are a placeholder.
+const PREFIX_DYNAMIC = /\bf(?:"""|'''|"|')\s{0,4}\{[A-Za-z_][\w.\[\]'"]{0,60}\}|`\s{0,4}\$\{[^}\n]{1,80}\}/;
 const RANDOM_ID = /(?:\b(?:tool_call_id|toolCallId|call_id|callId|tool_use_id|toolUseId)\b|["']id["'])\s*[:=]\s*[^,\n]*?(?:uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\(|shortuuid)/;
 const SET_TOOLS = /\btools?\s*=\s*\[[^\]\n]*\bfor\s+\w+\s+in\s+(?:set\(|\w*_?set\b|\w+\.keys\(\)\s*\|)/;
 const OPENAI_COMPAT = /\bfrom\s+openai\s+import|\bimport\s+openai\b|from\s+["']openai["']|require\(\s*["']openai["']\s*\)|\bOpenAI\(|openrouter\.ai|chat\.completions\.create|litellm\.completion/;
@@ -256,6 +265,24 @@ const CACHE_USAGE_FIELD = /cache_read_input_tokens|cache_creation_input_tokens|c
 const COST_MATH = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b[^;\n]*(?:\*\s*[\w.[\]'"]*(?:price|rate|cost|per_?m|perM|usd)|\/\s*1[_,]?000[_,]?000|\/\s*1e6)|(?:price|rate|cost|per_?m|perM|usd)\w*\s*\*\s*[\w.[\]'"]*\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens)\b/i;
 const ZEROED_CACHE_USAGE = /\b(?:cache_creation_input_tokens|cache_read_input_tokens|cacheCreationInputTokens|cacheReadInputTokens|cached_tokens|cachedTokens)["']?\s*[:=]\s*0\b(?!\s*(?:if|\?|\|\||or\b|&&))/;
 const isComment = (raw: string) => /^\s*(?:#|\/\/|\*|\/\*)/.test(raw);
+
+/** A live provider key committed to source (the LiteLLM 1.107.0 incident began with one, Oct 2026). Runs on every
+ *  scanned file. The key is never echoed: the finding shows its first characters only; placeholders are skipped. */
+export function secretLint(path: string, lines: string[]): Finding[] {
+  const out: Finding[] = [];
+  for (let i = 0; i < lines.length && out.length < 5; i++) {
+    const raw = lines[i];
+    if (raw.length > 20_000) continue;
+    const km = HARDCODED_KEY.exec(raw);
+    if (!km || KEY_PLACEHOLDER.test(km[1])) continue;
+    const who = keyProvider(km[1]);
+    out.push({ file: path, severity: 'high', line: i + 1, title: `Hard-coded ${who} API key in source`,
+      detail: `A string that looks like a live ${who} key (${km[1].slice(0, 7)}…) is committed in this file. Anyone who can read the repository or its history can bill your account; a key committed to a public repo and never revoked is how the October 2026 LiteLLM supply-chain compromise began.`,
+      fix: 'Revoke the key at the provider now (removing it from the file does not remove it from git history), then load it from the environment or a secret manager. TokenZero never needs your key in code: SDKs read OPENAI_API_KEY / ANTHROPIC_API_KEY as usual.',
+      est_savings_pct: 0 });
+  }
+  return out;
+}
 
 export function cacheLint(path: string, lines: string[], masked: string[]): Finding[] {
   const out: Finding[] = [];
@@ -306,6 +333,13 @@ export function cacheLint(path: string, lines: string[], masked: string[]): Find
       detail: 'A value that changes on every request is written into the system prompt, which sits at the start of the cached prefix. Provider caches match byte-for-byte from the start, so no request ever reuses the previous one and the cache discount is lost on the whole prompt (11% of studied defects, arXiv:2610.34817).',
       fix: 'Keep the system prompt static. Put the current time or request id in the last user message (or round it to the day if it must stay in the system prompt).',
       est_savings_pct: 15 });
+    // (P) Per-request content placed at the very start of a long system prompt: nothing after it can be cached.
+    const pm = PREFIX_DYNAMIC.exec(raw);
+    if (pm && SYSTEM_CTX.test(raw.slice(0, pm.index + 1)) && raw.length - pm.index >= 160) add('prefix-order', {
+      severity: 'medium', line: i + 1, title: 'Per-request value at the start of the system prompt (everything after it misses the cache)',
+      detail: 'The system prompt opens with an interpolated value and continues with a long fixed block. Provider caches match byte-for-byte from the first token, so when the opening varies per request the fixed block behind it is re-billed at the full input rate every time. Moving per-job details below the shared prompt took a published AI code-review pipeline from $2.43 to $0.77 per run.',
+      fix: 'Put the fixed instructions first and the per-request details (names, ids, dates, file lists) at the end, ideally in the last user message.',
+      est_savings_pct: 20 });
     // (3) Bytes that differ for identical content: random ids rewritten into history, tools built from an unordered set.
     if (RANDOM_ID.test(raw) || SET_TOOLS.test(raw)) add('serialization', {
       severity: 'low', line: i + 1, title: RANDOM_ID.test(raw) ? 'Random ids generated for messages or tool calls in the prompt' : 'Tool list built from an unordered set',
@@ -521,6 +555,8 @@ export function analyzeFiles(files: SourceFile[], repo: string | null = null, ma
       siteFindings.push(local);
     });
 
+    // Committed provider keys: report-only, on every file, never downgraded (a leaked key is a leaked key).
+    findings.push(...secretLint(f.path, lines));
     // Prompt-caching mis-integration (CacheLint taxonomy): report-only, kept out of the estimate.
     if (callLines.length || hasCacheControl || USAGE_FIELD.test(src)) {
       for (const fd of cacheLint(f.path, lines, masked)) findings.push({ ...fd, severity: kind === 'library' || illustrative ? DOWN[fd.severity] : fd.severity });

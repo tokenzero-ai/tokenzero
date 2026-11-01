@@ -16,18 +16,40 @@ import { PRICING_VERSION } from '../../src/pricing.ts';
 import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 
-const VERSION = '0.2.9';
+const VERSION = '0.2.10';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
 const BAKED_URL = typeof __TOKENZERO_BAKED__ === 'string' ? __TOKENZERO_BAKED__ : '__TOKENZERO_DEFAULT_URL__';
 const SUPPORTED = [...MCP_LEGACY_VERSIONS];
 const SERVER = { name: 'tokenzero', version: VERSION };
-const CAPABILITIES = { tools: { listChanged: false } };
-const INSTRUCTIONS = 'Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.';
+const CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false } };
+// Slash-command entry points (same names as the hosted server); the local audit scans this machine, nothing uploaded.
+const PROMPTS = [
+  { name: 'cut-my-llm-bill', title: 'Cut my LLM bill', description: 'Find token waste in this project (scanned locally, nothing uploaded) and show the top fixes with estimated savings. No API key needed.', arguments: [{ name: 'repo', description: 'owner/name of a public GitHub repo instead of the local project', required: false }] },
+  { name: 'price-my-workload', title: 'Price my LLM workload', description: 'Price a workload across models at list prices, with the cheaper sibling and the effect of prompt caching. No API key needed.', arguments: [{ name: 'model', description: 'model id, e.g. gpt-6.1-sol or claude-sonnet-5-5', required: true }, { name: 'requests_per_month', description: 'monthly request volume (default 10000)', required: false }] },
+  { name: 'try-tokenzero', title: 'Try TokenZero on one call', description: 'Run one priced call through TokenZero with no key or setup and show the saving and its signed receipt.', arguments: [] },
+];
+function promptMessages(name: string, args: any = {}) {
+  const p = PROMPTS.find(x => x.name === name);
+  if (!p) throw new Error(`unknown prompt ${name}; available: ${PROMPTS.map(x => x.name).join(', ')}`);
+  const say = (text: string) => ({ description: p.description, messages: [{ role: 'user', content: { type: 'text', text } }] });
+  const repo = typeof args?.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(args.repo.trim()) ? args.repo.trim() : '';
+  if (name === 'cut-my-llm-bill') return say(`Use the TokenZero MCP tools to find where this project wastes LLM tokens. Call audit_repo_token_waste with ${repo ? `repo "${repo}"` : 'path "." (it scans this machine; nothing is uploaded)'}. Then list the top 3 findings with file:line, the estimated saving and the fix, and finish with the one-line change that applies the fixes automatically (base_url ${serviceUrl() || "https://api.tokenzero.sh"}/v1, my provider key stays mine). If nothing calls an LLM here, call try_tokenzero instead and show what it measured.`);
+  if (name === 'price-my-workload') { const model = typeof args?.model === 'string' && args.model.trim() ? args.model.trim().slice(0, 80) : 'gpt-6.1-sol'; const n = Number(args?.requests_per_month) > 0 ? Math.min(1e9, Math.round(Number(args.requests_per_month))) : 10000; return say(`Call the TokenZero tool calculate_model_arbitrage with {"model": "${model}", "requests_per_month": ${n}}. Show the monthly cost on ${model}, on its cheaper sibling, and with prompt caching, as a short table, then one sentence on which change saves the most.`); }
+  return say('Call the TokenZero tool try_tokenzero with no arguments. Show what happened, the saving it measured, and the signed receipt id, then the keyless curl it returns so I can try a real call.');
+}
+const INSTRUCTIONS = 'Start with try_tokenzero (no key, no setup). Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.';
 const serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith('http') ? BAKED_URL : '')).replace(/\/+$/, '');
 
 const TOOLS = [
+  {
+    name: 'try_tokenzero',
+    title: 'Try TokenZero (no key needed)',
+    annotations: { title: 'Try TokenZero (no key needed)', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    description: 'Call this first: no API key, no signup, no setup. Shows what TokenZero would do to one of your LLM calls: it runs the four savings engines (prompt-cache formatting, edge cache, cascade advice, signed receipt) on a sample or your own prompt and model, and returns the list-price saving, the signed receipt and a copy-paste keyless curl that makes a real call on a free model. Pass {} for the default, or {"model": "gpt-6.1-sol", "system": "...", "prompt": "..."}. Runs in the TokenZero service; send no secrets in the prompt.',
+    inputSchema: { type: 'object', properties: { model: { type: 'string', description: 'a priced model id; default gpt-6.1-sol' }, system: { type: 'string', description: 'your system prompt (optional)' }, prompt: { type: 'string', description: 'your user message (optional)' } }, additionalProperties: false },
+  },
   {
     name: 'audit_repo_token_waste',
     title: 'Audit a repo or directory for LLM token waste',
@@ -78,6 +100,7 @@ async function callTool(name: string, args: any): Promise<unknown> {
       return analyzeFiles(walk(root), null, manifests(root));
     }
     case 'calculate_model_arbitrage': return modelArbitrage(args);
+    case 'try_tokenzero':
     case 'optimize_prompt_payload': {
       const base = serviceUrl();
       if (!base) throw new Error('set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)');
@@ -138,6 +161,8 @@ async function handle(m: any) {
       switch (m.method) {
         case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
         case 'tools/list': return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case 'prompts/list': return reply(modernResult({ prompts: PROMPTS }, SERVER, true));
+        case 'prompts/get': return reply(modernResult(promptMessages(String(m.params?.name ?? ''), m.params?.arguments), SERVER));
         case 'tools/call': return reply(modernResult(await call(), SERVER));
         default:
           if (typeof m.method === 'string' && m.method.startsWith('notifications/')) return;
@@ -153,6 +178,8 @@ async function handle(m: any) {
       // The stdio backward-compatibility probe: a dual-era client sends this first.
       case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
       case 'tools/list': return reply({ tools: TOOLS });
+      case 'prompts/list': return reply({ prompts: PROMPTS });
+      case 'prompts/get': return reply(promptMessages(String(m.params?.name ?? ''), m.params?.arguments));
       case 'tools/call': return reply(await call());
       default:
         if (typeof m?.method === 'string' && m.method.startsWith('notifications/')) return;

@@ -27,7 +27,9 @@ export function pricingFreshness(nowMs = Date.now()) {
   return { version: PRICING_VERSION, age_days: ageDays, max_age_days: PRICING_MAX_AGE_DAYS, stale: ageDays > PRICING_MAX_AGE_DAYS || overdue.length > 0, overdue_reviews: overdue, upcoming_reviews: PRICING_REVIEWS.filter(r => r.on > today) };
 }
 
-export type Provider = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'xai' | 'deepseek';
+export type Provider = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'xai' | 'deepseek' | 'groq' | 'mistral' | 'cerebras' | 'github';
+/** OpenAI-compatible providers people try first on a free tier; routed by key prefix or X-TokenZero-Provider. */
+export const FREE_TIER_PROVIDERS = ['groq', 'mistral', 'cerebras', 'github'] as const;
 
 export interface Price {
   provider: Provider;
@@ -194,8 +196,21 @@ export function normalizeModel(model: unknown): string | null {
   return null;
 }
 
+/** OpenRouter's $0 models: any id ending in ":free", and its free-model router "openrouter/free". */
+export const isFreeModel = (model: unknown) => typeof model === 'string' && (/:free$/i.test(model.trim()) || /^openrouter\/free$/i.test(model.trim()));
+/** Server-side fallback price source (OpenRouter's catalogue, registered by openrouter-prices.ts). Unset in the CLI. */
+let dynamicPrice: ((model: string) => Price | null) | null = null;
+export const setDynamicPriceSource = (fn: ((model: string) => Price | null) | null) => { dynamicPrice = fn; };
+const FREE_PRICE: Price = { provider: 'openrouter', tier: 'fast', input: 0, output: 0, cachedInput: 0 };
+
 export function priceFor(model: unknown): (Price & { key: string }) | null {
+  // Free models price at $0, so receipts carry real (zero) costs instead of nulls and a warning.
+  if (isFreeModel(model)) return { key: String(model).trim().toLowerCase(), ...FREE_PRICE };
   const key = normalizeModel(model);
+  if (key && PRICES[key]) return { key, ...PRICES[key] };
+  // Outside the curated table: OpenRouter's published per-model price, refreshed daily.
+  const dyn = typeof model === 'string' && dynamicPrice ? dynamicPrice(model) : null;
+  if (dyn) return { key: String(model).trim().toLowerCase(), ...dyn };
   return key ? { key, ...PRICES[key] } : null;
 }
 
@@ -284,6 +299,8 @@ export function providerOfModel(model: unknown): Provider {
   if (m.startsWith('gemini') || m.startsWith('models/gemini')) return 'gemini';
   if (m.startsWith('grok')) return 'xai';
   if (m.startsWith('deepseek')) return 'deepseek';
+  // Mistral keys carry no prefix, so a bare Mistral model id is the routing signal.
+  if (/^(mistral|open-mistral|codestral|magistral|devstral|ministral|pixtral|voxtral)/.test(m)) return 'mistral';
   return 'openai';
 }
 
@@ -294,6 +311,9 @@ export function providerOfKey(key: string | undefined): Provider | null {
   if (key.startsWith('sk-or-')) return 'openrouter';
   if (key.startsWith('AIza')) return 'gemini';
   if (key.startsWith('xai-')) return 'xai';
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('csk-')) return 'cerebras';
+  if (/^(ghp_|github_pat_|gho_|ghu_)/.test(key)) return 'github';
   if (key.startsWith('sk-')) return 'openai';
   return null;
 }

@@ -12,7 +12,7 @@ function encoder(): Tiktoken {
   return enc;
 }
 
-const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, openrouter: 1.05, xai: 1.05, deepseek: 1.05 };
+const PROVIDER_FACTOR: Record<Provider, number> = { openai: 1, anthropic: 1.12, gemini: 1.05, openrouter: 1.05, xai: 1.05, deepseek: 1.05, groq: 1.05, mistral: 1.05, cerebras: 1.05, github: 1 };
 // Claude 4.7 and later (and Mythos) use a tokenizer that yields ~30% more tokens than
 // the earlier Claude tokenizer for the same text. Estimates feed the simulator, the
 // audit and the cache-minimum checks; receipts always use provider-reported usage.

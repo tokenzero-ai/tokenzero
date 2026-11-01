@@ -47,7 +47,7 @@ test('stdio MCP: initialize, list tools, local audit of the working directory, a
   const by = (id: number) => res.find(r => r.id === id);
   assert.equal(by(1).result.protocolVersion, '2025-06-18');
   assert.equal(by(1).result.serverInfo.version, JSON.parse(fs.readFileSync('mcp/package.json', 'utf8')).version, 'MCP version matches mcp/package.json');
-  assert.deepEqual(by(2).result.tools.map((t: any) => t.name), ['audit_repo_token_waste', 'calculate_model_arbitrage', 'optimize_prompt_payload', 'workspace_metrics', 'provision_workspace']);
+  assert.deepEqual(by(2).result.tools.map((t: any) => t.name), ['try_tokenzero', 'audit_repo_token_waste', 'calculate_model_arbitrage', 'optimize_prompt_payload', 'workspace_metrics', 'provision_workspace']);
   const audit = by(3).result.structuredContent;
   assert.equal(audit.repo_kind, 'app');
   assert.ok(audit.findings.some((f: any) => f.severity === 'high' && /static prompt/.test(f.title)));
@@ -74,7 +74,7 @@ test('stdio MCP: 2026-07-28 clients (no handshake) and legacy clients are both s
   assert.deepEqual(by(1).result.supportedVersions, ['2026-07-28']);
   assert.equal(by(1).result._meta['io.modelcontextprotocol/serverInfo'].name, 'tokenzero');
   assert.equal(by(1).result.cacheScope, 'public'); assert.ok(by(1).result.ttlMs > 0);
-  assert.equal(by(2).result.resultType, 'complete'); assert.equal(by(2).result.tools.length, 5); assert.ok(by(2).result.ttlMs > 0);
+  assert.equal(by(2).result.resultType, 'complete'); assert.equal(by(2).result.tools.length, 6); assert.ok(by(2).result.ttlMs > 0);
   assert.equal(by(3).result.resultType, 'complete'); assert.equal(by(3).result.isError, false);
   assert.equal(by(4).error.code, -32022, 'UnsupportedProtocolVersionError');
   assert.deepEqual(by(4).error.data, { supported: ['2026-07-28'], requested: '1900-01-01' });
@@ -91,4 +91,21 @@ test('stdio MCP: provision_workspace is listed and fails cleanly without a reach
   const by = (id: number) => res.find(r => r.id === id);
   assert.ok(by(1).result.tools.some((t: any) => t.name === 'provision_workspace'));
   assert.equal(by(2).result.isError, true); assert.match(by(2).result.content[0].text, /could not reach the TokenZero service/);
+});
+
+test('stdio MCP: prompts are listed and drive a local audit (path ".", nothing uploaded)', async () => {
+  const { spawn } = await import('node:child_process');
+  const p = spawn(process.execPath, ['mcp/bin/tokenzero-mcp.mjs'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, TOKENZERO_URL: 'http://127.0.0.1:9' } });
+  let buf = ''; p.stdout.on('data', d => { buf += d; });
+  const send = (o: any) => p.stdin.write(JSON.stringify(o) + '\n');
+  send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+  send({ jsonrpc: '2.0', id: 2, method: 'prompts/list' });
+  send({ jsonrpc: '2.0', id: 3, method: 'prompts/get', params: { name: 'cut-my-llm-bill', arguments: {} } });
+  const deadline = Date.now() + 10_000;
+  while ((buf.match(/\n/g) ?? []).length < 3 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
+  p.kill();
+  const msgs = buf.trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(msgs.find(m => m.id === 1).result.capabilities.prompts, { listChanged: false });
+  assert.deepEqual(msgs.find(m => m.id === 2).result.prompts.map((x: any) => x.name), ['cut-my-llm-bill', 'price-my-workload', 'try-tokenzero']);
+  assert.match(msgs.find(m => m.id === 3).result.messages[0].content.text, /audit_repo_token_waste with path "\." \(it scans this machine; nothing is uploaded\)/);
 });

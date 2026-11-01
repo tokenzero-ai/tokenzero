@@ -137,8 +137,15 @@ function normalizeModel(model) {
   for (const k of KEYS_BY_LENGTH) if (m.startsWith(k + "-") || m === k) return k;
   return null;
 }
+var isFreeModel = (model) => typeof model === "string" && (/:free$/i.test(model.trim()) || /^openrouter\/free$/i.test(model.trim()));
+var dynamicPrice = null;
+var FREE_PRICE = { provider: "openrouter", tier: "fast", input: 0, output: 0, cachedInput: 0 };
 function priceFor(model) {
+  if (isFreeModel(model)) return { key: String(model).trim().toLowerCase(), ...FREE_PRICE };
   const key = normalizeModel(model);
+  if (key && PRICES[key]) return { key, ...PRICES[key] };
+  const dyn = typeof model === "string" && dynamicPrice ? dynamicPrice(model) : null;
+  if (dyn) return { key: String(model).trim().toLowerCase(), ...dyn };
   return key ? { key, ...PRICES[key] } : null;
 }
 function costOf(model, u, factor = 1) {
@@ -338,7 +345,7 @@ function makeLocator(masked) {
   };
   return { text, starts, lineOf };
 }
-var ASSIGN = (name) => new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var|final|static|private|public|readonly|\\s)*\\s*(?:self\\.|this\\.)?${name}\\s*(?::[^=\\n]+)?=(?![=>])`);
+var ASSIGN = (name) => new RegExp(`^[ \\t]*(?:export[ \\t]+)?(?:(?:const|let|var|final|static|private|public|readonly)[ \\t]+)*(?:self\\.|this\\.)?${name}[ \\t]*(?::[^=\\n]{0,200})?=(?![=>])`);
 var KEYWORDS = /* @__PURE__ */ new Set(["self", "this", "await", "async", "return", "model", "messages", "role", "content", "system", "user", "true", "false", "True", "False", "None", "null", "undefined", "new", "max_tokens", "temperature", "client", "resp", "response"]);
 function assignmentScope(loc, masked, line) {
   const eq = masked[line].search(/=(?![=>])/);
@@ -407,6 +414,10 @@ var MODEL_NAME_TEST = /\b(?:model|model_?id|model_?name|modelId|modelName|deploy
 var VOLATILE_CALL = /\b(?:datetime\.(?:now|utcnow)\(|date\.today\(|time\.time\(|time\.strftime\(|Date\.now\(|new Date\(\s*\)|\.toISOString\(|\.isoformat\(|\.toLocale(?:Date|Time)?String\(|uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\()/;
 var INTERPOLATES = /\bf["']|\$\{|\.format\(|%\s*\(|["']\s*\+|\+\s*["']|`/;
 var SYSTEM_CTX = /\bsystem(?:_?prompt|Prompt|_?message|Message|_?instructions?)?\b\s*[:=(]|["']role["']\s*:\s*["']system["']|\brole\s*:\s*["']system["']|\binstructions\s*[:=]/i;
+var HARDCODED_KEY = /["'`]((?:sk-ant-api\d\d-|sk-ant-|sk-proj-|sk-or-v1-|sk-svcacct-)[A-Za-z0-9_-]{20,200}|sk-[A-Za-z0-9]{40,200}|AIza[0-9A-Za-z_-]{35}|xai-[A-Za-z0-9]{40,200}|gsk_[A-Za-z0-9]{40,200}|csk-[A-Za-z0-9]{30,200}|tz_live_[A-Za-z0-9_-]{24,200})["'`]/;
+var KEY_PLACEHOLDER = /x{6,}|X{6,}|0{8,}|1234567|abcdef|your|example|placeholder|dummy|fake|test|redacted|\.\.\./i;
+var keyProvider = (k) => k.startsWith("sk-ant-") ? "Anthropic" : k.startsWith("sk-or-") ? "OpenRouter" : k.startsWith("AIza") ? "Google" : k.startsWith("xai-") ? "xAI" : k.startsWith("gsk_") ? "Groq" : k.startsWith("csk-") ? "Cerebras" : k.startsWith("tz_live_") ? "TokenZero" : "OpenAI";
+var PREFIX_DYNAMIC = /\bf(?:"""|'''|"|')\s{0,4}\{[A-Za-z_][\w.\[\]'"]{0,60}\}|`\s{0,4}\$\{[^}\n]{1,80}\}/;
 var RANDOM_ID = /(?:\b(?:tool_call_id|toolCallId|call_id|callId|tool_use_id|toolUseId)\b|["']id["'])\s*[:=]\s*[^,\n]*?(?:uuid\.?uuid4\(|uuid4\(|randomUUID\(|nanoid\(|Math\.random\(|secrets\.token_hex\(|shortuuid)/;
 var SET_TOOLS = /\btools?\s*=\s*\[[^\]\n]*\bfor\s+\w+\s+in\s+(?:set\(|\w*_?set\b|\w+\.keys\(\)\s*\|)/;
 var OPENAI_COMPAT = /\bfrom\s+openai\s+import|\bimport\s+openai\b|from\s+["']openai["']|require\(\s*["']openai["']\s*\)|\bOpenAI\(|openrouter\.ai|chat\.completions\.create|litellm\.completion/;
@@ -418,6 +429,26 @@ var CACHE_USAGE_FIELD = /cache_read_input_tokens|cache_creation_input_tokens|cac
 var COST_MATH = /\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens|prompt_token_count)\b[^;\n]*(?:\*\s*[\w.[\]'"]*(?:price|rate|cost|per_?m|perM|usd)|\/\s*1[_,]?000[_,]?000|\/\s*1e6)|(?:price|rate|cost|per_?m|perM|usd)\w*\s*\*\s*[\w.[\]'"]*\b(?:input_tokens|prompt_tokens|promptTokenCount|inputTokens|promptTokens)\b/i;
 var ZEROED_CACHE_USAGE = /\b(?:cache_creation_input_tokens|cache_read_input_tokens|cacheCreationInputTokens|cacheReadInputTokens|cached_tokens|cachedTokens)["']?\s*[:=]\s*0\b(?!\s*(?:if|\?|\|\||or\b|&&))/;
 var isComment = (raw) => /^\s*(?:#|\/\/|\*|\/\*)/.test(raw);
+function secretLint(path3, lines) {
+  const out = [];
+  for (let i = 0; i < lines.length && out.length < 5; i++) {
+    const raw = lines[i];
+    if (raw.length > 2e4) continue;
+    const km = HARDCODED_KEY.exec(raw);
+    if (!km || KEY_PLACEHOLDER.test(km[1])) continue;
+    const who = keyProvider(km[1]);
+    out.push({
+      file: path3,
+      severity: "high",
+      line: i + 1,
+      title: `Hard-coded ${who} API key in source`,
+      detail: `A string that looks like a live ${who} key (${km[1].slice(0, 7)}\u2026) is committed in this file. Anyone who can read the repository or its history can bill your account; a key committed to a public repo and never revoked is how the October 2026 LiteLLM supply-chain compromise began.`,
+      fix: "Revoke the key at the provider now (removing it from the file does not remove it from git history), then load it from the environment or a secret manager. TokenZero never needs your key in code: SDKs read OPENAI_API_KEY / ANTHROPIC_API_KEY as usual.",
+      est_savings_pct: 0
+    });
+  }
+  return out;
+}
 function cacheLint(path3, lines, masked) {
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -471,6 +502,15 @@ function cacheLint(path3, lines, masked) {
       detail: "A value that changes on every request is written into the system prompt, which sits at the start of the cached prefix. Provider caches match byte-for-byte from the start, so no request ever reuses the previous one and the cache discount is lost on the whole prompt (11% of studied defects, arXiv:2610.34817).",
       fix: "Keep the system prompt static. Put the current time or request id in the last user message (or round it to the day if it must stay in the system prompt).",
       est_savings_pct: 15
+    });
+    const pm = PREFIX_DYNAMIC.exec(raw);
+    if (pm && SYSTEM_CTX.test(raw.slice(0, pm.index + 1)) && raw.length - pm.index >= 160) add("prefix-order", {
+      severity: "medium",
+      line: i + 1,
+      title: "Per-request value at the start of the system prompt (everything after it misses the cache)",
+      detail: "The system prompt opens with an interpolated value and continues with a long fixed block. Provider caches match byte-for-byte from the first token, so when the opening varies per request the fixed block behind it is re-billed at the full input rate every time. Moving per-job details below the shared prompt took a published AI code-review pipeline from $2.43 to $0.77 per run.",
+      fix: "Put the fixed instructions first and the per-request details (names, ids, dates, file lists) at the end, ideally in the last user message.",
+      est_savings_pct: 20
     });
     if (RANDOM_ID.test(raw) || SET_TOOLS.test(raw)) add("serialization", {
       severity: "low",
@@ -678,6 +718,7 @@ function analyzeFiles(files, repo = null, manifests2 = []) {
       findings.push(...local);
       siteFindings.push(local);
     });
+    findings.push(...secretLint(f.path, lines));
     if (callLines.length || hasCacheControl || USAGE_FIELD.test(src)) {
       for (const fd of cacheLint(f.path, lines, masked)) findings.push({ ...fd, severity: kind === "library" || illustrative ? DOWN[fd.severity] : fd.severity });
     }
@@ -880,14 +921,39 @@ function manifests(root) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.9";
+var VERSION = "0.2.10";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
-var CAPABILITIES = { tools: { listChanged: false } };
-var INSTRUCTIONS = "Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.";
+var CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false } };
+var PROMPTS = [
+  { name: "cut-my-llm-bill", title: "Cut my LLM bill", description: "Find token waste in this project (scanned locally, nothing uploaded) and show the top fixes with estimated savings. No API key needed.", arguments: [{ name: "repo", description: "owner/name of a public GitHub repo instead of the local project", required: false }] },
+  { name: "price-my-workload", title: "Price my LLM workload", description: "Price a workload across models at list prices, with the cheaper sibling and the effect of prompt caching. No API key needed.", arguments: [{ name: "model", description: "model id, e.g. gpt-6.1-sol or claude-sonnet-5-5", required: true }, { name: "requests_per_month", description: "monthly request volume (default 10000)", required: false }] },
+  { name: "try-tokenzero", title: "Try TokenZero on one call", description: "Run one priced call through TokenZero with no key or setup and show the saving and its signed receipt.", arguments: [] }
+];
+function promptMessages(name, args = {}) {
+  const p = PROMPTS.find((x) => x.name === name);
+  if (!p) throw new Error(`unknown prompt ${name}; available: ${PROMPTS.map((x) => x.name).join(", ")}`);
+  const say = (text) => ({ description: p.description, messages: [{ role: "user", content: { type: "text", text } }] });
+  const repo = typeof args?.repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(args.repo.trim()) ? args.repo.trim() : "";
+  if (name === "cut-my-llm-bill") return say(`Use the TokenZero MCP tools to find where this project wastes LLM tokens. Call audit_repo_token_waste with ${repo ? `repo "${repo}"` : 'path "." (it scans this machine; nothing is uploaded)'}. Then list the top 3 findings with file:line, the estimated saving and the fix, and finish with the one-line change that applies the fixes automatically (base_url ${serviceUrl() || "https://api.tokenzero.sh"}/v1, my provider key stays mine). If nothing calls an LLM here, call try_tokenzero instead and show what it measured.`);
+  if (name === "price-my-workload") {
+    const model = typeof args?.model === "string" && args.model.trim() ? args.model.trim().slice(0, 80) : "gpt-6.1-sol";
+    const n = Number(args?.requests_per_month) > 0 ? Math.min(1e9, Math.round(Number(args.requests_per_month))) : 1e4;
+    return say(`Call the TokenZero tool calculate_model_arbitrage with {"model": "${model}", "requests_per_month": ${n}}. Show the monthly cost on ${model}, on its cheaper sibling, and with prompt caching, as a short table, then one sentence on which change saves the most.`);
+  }
+  return say("Call the TokenZero tool try_tokenzero with no arguments. Show what happened, the saving it measured, and the signed receipt id, then the keyless curl it returns so I can try a real call.");
+}
+var INSTRUCTIONS = "Start with try_tokenzero (no key, no setup). Use provision_workspace to create a TokenZero workspace and key with no form; audit_repo_token_waste to find LLM cost waste in the current project (local, nothing uploaded), calculate_model_arbitrage to price model alternatives, optimize_prompt_payload to make a request body cache-friendly.";
 var serviceUrl = () => (process.env.TOKENZERO_URL || (BAKED_URL.startsWith("http") ? BAKED_URL : "")).replace(/\/+$/, "");
 var TOOLS = [
+  {
+    name: "try_tokenzero",
+    title: "Try TokenZero (no key needed)",
+    annotations: { title: "Try TokenZero (no key needed)", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    description: 'Call this first: no API key, no signup, no setup. Shows what TokenZero would do to one of your LLM calls: it runs the four savings engines (prompt-cache formatting, edge cache, cascade advice, signed receipt) on a sample or your own prompt and model, and returns the list-price saving, the signed receipt and a copy-paste keyless curl that makes a real call on a free model. Pass {} for the default, or {"model": "gpt-6.1-sol", "system": "...", "prompt": "..."}. Runs in the TokenZero service; send no secrets in the prompt.',
+    inputSchema: { type: "object", properties: { model: { type: "string", description: "a priced model id; default gpt-6.1-sol" }, system: { type: "string", description: "your system prompt (optional)" }, prompt: { type: "string", description: "your user message (optional)" } }, additionalProperties: false }
+  },
   {
     name: "audit_repo_token_waste",
     title: "Audit a repo or directory for LLM token waste",
@@ -938,6 +1004,7 @@ async function callTool(name, args) {
     }
     case "calculate_model_arbitrage":
       return modelArbitrage(args);
+    case "try_tokenzero":
     case "optimize_prompt_payload": {
       const base = serviceUrl();
       if (!base) throw new Error("set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)");
@@ -1019,6 +1086,10 @@ async function handle(m) {
           return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
         case "tools/list":
           return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case "prompts/list":
+          return reply(modernResult({ prompts: PROMPTS }, SERVER, true));
+        case "prompts/get":
+          return reply(modernResult(promptMessages(String(m.params?.name ?? ""), m.params?.arguments), SERVER));
         case "tools/call":
           return reply(modernResult(await call(), SERVER));
         default:
@@ -1038,6 +1109,10 @@ async function handle(m) {
         return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
       case "tools/list":
         return reply({ tools: TOOLS });
+      case "prompts/list":
+        return reply({ prompts: PROMPTS });
+      case "prompts/get":
+        return reply(promptMessages(String(m.params?.name ?? ""), m.params?.arguments));
       case "tools/call":
         return reply(await call());
       default:

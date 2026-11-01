@@ -1,0 +1,74 @@
+# Publishes @tokenzero/cli and @tokenzero/mcp to npm with build provenance when a GitHub release is
+# published, and attaches a CycloneDX SBOM for each package to that release.
+#
+# Authentication: npm trusted publishing (OIDC). No npm token is stored anywhere: npm accepts the
+# short-lived GitHub OIDC token from this workflow only, so a leaked repository secret cannot publish.
+# One-time setup by the npm package owner, for each of @tokenzero/cli and @tokenzero/mcp:
+#   npmjs.com -> package -> Settings -> Trusted publishing -> GitHub Actions
+#   organization/user: tokenzero-ai   repository: tokenzero   workflow filename: npm-release.yml
+# Provenance links each published tarball to this repository, commit and workflow run, and npm
+# shows it on the package page ("Built and signed on GitHub Actions").
+name: Publish npm packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # upload the SBOMs to the release
+  id-token: write   # OIDC for npm trusted publishing and provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: npm with trusted publishing
+        run: npm install -g npm@11 && npm --version
+
+      - name: Versions match the release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          cli=$(node -p "require('./cli/package.json').version")
+          mcp=$(node -p "require('./mcp/package.json').version")
+          echo "cli $cli, mcp $mcp, tag ${TAG:-none}"
+          [ "$cli" = "$mcp" ] || { echo "cli and mcp versions differ"; exit 1; }
+          if [ -n "$TAG" ]; then [ "${TAG#v}" = "$cli" ] || { echo "tag $TAG does not match $cli"; exit 1; }; fi
+
+      - name: Build and test
+        run: |
+          node cli/build.mjs
+          node mcp/build.mjs
+          git diff --exit-code -- cli/bin mcp/bin || { echo "committed bundles are out of date"; exit 1; }
+          node scripts/run-tests.mjs
+
+      - name: SBOMs (CycloneDX)
+        run: |
+          for p in cli mcp; do
+            (cd "$p" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund >/dev/null && npm sbom --sbom-format cyclonedx --omit dev > "../tokenzero-$p-sbom.cdx.json")
+          done
+          ls -l tokenzero-*-sbom.cdx.json
+
+      - name: Publish with provenance
+        run: |
+          for p in cli mcp; do
+            name=$(node -p "require('./$p/package.json').name"); ver=$(node -p "require('./$p/package.json').version")
+            if npm view "$name@$ver" version >/dev/null 2>&1; then echo "$name@$ver already published"; continue; fi
+            (cd "$p" && npm publish --provenance --access public)
+          done
+
+      - name: Attach SBOMs to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" tokenzero-cli-sbom.cdx.json tokenzero-mcp-sbom.cdx.json --clobber

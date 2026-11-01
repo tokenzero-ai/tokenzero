@@ -1,21 +1,22 @@
 # Publishes the TokenZero MCP server (sh.tokenzero/mcp, the name in mcp/server.json) to the official
-# MCP Registry (registry.modelcontextprotocol.io) when a GitHub release is published, or by hand.
+# MCP Registry (registry.modelcontextprotocol.io) after each release's npm publish, or by hand.
 #
 # Authentication: HTTP domain verification for the sh.tokenzero/* namespace. The registry fetches
 # https://tokenzero.sh/.well-known/mcp-registry-auth and expects a signature from the matching
 # Ed25519 private key, stored in the MCP_PRIVATE_KEY repository secret. One registry name only:
 # GitHub OIDC is deliberately not used, since it can only authorise io.github.<owner>/* names.
-# The npm package (@tokenzero/mcp) is published separately; the registry checks that the version
-# in server.json exists on npm, so run this after the npm release.
+# Runs after the npm release workflow (npm-release.yml) succeeds: the registry checks that the
+# version in server.json exists on npm.
 name: Publish to MCP Registry
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Publish npm packages"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (defaults to the release tag without the leading v, or server.json)"
+        description: "Version to publish (defaults to the version in mcp/server.json)"
         required: false
 
 permissions:
@@ -23,10 +24,14 @@ permissions:
 
 jobs:
   publish:
+    # Only after a successful npm publish (or a manual run).
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install mcp-publisher
         run: |
@@ -36,10 +41,9 @@ jobs:
       - name: Prepare server.json
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          VERSION="${INPUT_VERSION:-${TAG#v}}"
+          VERSION="${INPUT_VERSION:-}"
           cp mcp/server.json server.json
           if [ -n "$VERSION" ]; then
             jq --arg v "$VERSION" '.version = $v | (.packages // []) |= map(.version = $v)' server.json > server.tmp && mv server.tmp server.json
