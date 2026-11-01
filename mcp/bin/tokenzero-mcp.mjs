@@ -932,12 +932,58 @@ function manifests(root) {
   });
 }
 
+// src/events-types.ts
+var EVENTS_EXTENSION = "io.modelcontextprotocol/events";
+var EVENT_ERR = { invalidParams: -32602, notFound: -32023, forbidden: -32024, resourceExhausted: -32025, unsupported: -32026 };
+var keyNote = "Needs a workspace key (x-tokenzero-key or TOKENZERO_KEY).";
+var EVENT_TYPES = [
+  {
+    name: "spend.threshold_crossed",
+    description: `Fires once per period when the workspace's metered LLM spend through TokenZero crosses a dollar threshold: wake an agent on a cost spike. ${keyNote}`,
+    delivery: ["poll"],
+    inputSchema: { type: "object", properties: { usd: { type: "number", exclusiveMinimum: 0, description: "threshold in USD of actual (post-savings) spend" }, window: { type: "string", enum: ["day", "month"], default: "day", description: "UTC calendar period the spend accumulates over" } }, required: ["usd"] },
+    payloadSchema: { type: "object", properties: { workspace: { type: "string" }, window: { type: "string" }, period: { type: "string" }, threshold_usd: { type: "number" }, spend_usd: { type: "number" }, crossed_at: { type: "string", format: "date-time" }, request_id: { type: "string" }, dashboard_url: { type: "string" } } }
+  },
+  {
+    name: "savings.daily_report",
+    description: `One event per completed UTC day with traffic: requests, list-price baseline, actual spend and signed savings. ${keyNote}`,
+    delivery: ["poll"],
+    inputSchema: { type: "object", properties: {} },
+    payloadSchema: { type: "object", properties: { workspace: { type: "string" }, date: { type: "string", format: "date" }, requests: { type: "integer" }, cache_hits: { type: "integer" }, baseline_usd: { type: "number" }, actual_usd: { type: "number" }, savings_usd: { type: "number" }, savings_pct: { type: "number" } } }
+  },
+  {
+    name: "upstream.auth_failed",
+    description: `Fires when a provider rejects the BYOK key a call carried (401/403), with the fix and a keyless sandbox link. ${keyNote}`,
+    delivery: ["poll"],
+    inputSchema: { type: "object", properties: { provider: { type: "string", description: "only this provider (openai, anthropic, gemini, ...)" } } },
+    payloadSchema: { type: "object", properties: { workspace: { type: "string" }, request_id: { type: "string" }, provider: { type: "string" }, status: { type: "integer" }, model: { type: ["string", "null"] }, at: { type: "string", format: "date-time" }, fix: { type: "string" }, keyless_sandbox: { type: "string" } } }
+  },
+  {
+    name: "pricing.changed",
+    description: "Fires when a list price in TokenZero's curated, provider-verified pricing table changes (one event per model and field). No key needed.",
+    delivery: ["poll"],
+    inputSchema: { type: "object", properties: { models: { type: "array", items: { type: "string" }, description: "only these model ids" } } },
+    payloadSchema: { type: "object", properties: { model: { type: "string" }, field: { type: "string", enum: ["input", "output", "cachedInput", "cacheWrite", "added", "removed"] }, old: { type: ["number", "null"] }, new: { type: ["number", "null"] }, unit: { type: "string" }, pricing_version: { type: "string" } } }
+  }
+];
+
 // mcp/src/main.ts
-var VERSION = "0.2.11";
+var VERSION = "0.2.12";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
-var CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false } };
+var CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, extensions: { [EVENTS_EXTENSION]: {} } };
+var LEGACY_CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, experimental: { [EVENTS_EXTENSION]: {} } };
+var listEvents = () => ({ events: EVENT_TYPES.map((e) => ({ ...e, delivery: [...e.delivery] })) });
+async function pollEvents(params) {
+  const base = serviceUrl();
+  if (!base) return { error: { code: EVENT_ERR.unsupported, message: "Unsupported", data: { reason: "set TOKENZERO_URL to poll events" } } };
+  const key = process.env.TOKENZERO_KEY ?? "";
+  const r = await fetch(base + "/v1/events/poll", { method: "POST", redirect: "manual", signal: AbortSignal.timeout(2e4), headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}`, ...key ? { "x-tokenzero-key": key } : {} }, body: JSON.stringify({ name: params?.name, arguments: params?.arguments, cursor: params?.cursor ?? null, maxAgeMs: params?.maxAgeMs, maxEvents: params?.maxEvents }) });
+  const j = await r.json().catch(() => null);
+  if (r.ok && j && Array.isArray(j.events)) return { result: j };
+  return { error: j?.error && typeof j.error.code === "number" ? j.error : { code: RPC.internal, message: `events/poll failed: HTTP ${r.status}` } };
+}
 var PROMPTS = [
   { name: "cut-my-llm-bill", title: "Cut my LLM bill", description: "Find token waste in this project (scanned locally, nothing uploaded) and show the top fixes with estimated savings. No API key needed.", arguments: [{ name: "repo", description: "owner/name of a public GitHub repo instead of the local project", required: false }] },
   { name: "price-my-workload", title: "Price my LLM workload", description: "Price a workload across models at list prices, with the cheaper sibling and the effect of prompt caching. No API key needed.", arguments: [{ name: "model", description: "model id, e.g. gpt-6.1-sol or claude-sonnet-5-5", required: true }, { name: "requests_per_month", description: "monthly request volume (default 10000)", required: false }] },
@@ -1104,6 +1150,16 @@ async function handle(m) {
           return reply(modernResult(promptMessages(String(m.params?.name ?? ""), m.params?.arguments), SERVER));
         case "tools/call":
           return reply(modernResult(await call(), SERVER));
+        case "events/list":
+          return reply(modernResult(listEvents(), SERVER, true));
+        case "events/poll": {
+          const r = await pollEvents(m.params);
+          return r.result ? reply({ ...r.result, resultType: "complete", _meta: modernResult({}, SERVER)._meta }) : failData(r.error.code, r.error.message, r.error.data);
+        }
+        case "events/stream":
+        case "events/subscribe":
+        case "events/unsubscribe":
+          return failData(EVENT_ERR.unsupported, "Unsupported", { feature: "deliveryMode", value: m.method === "events/stream" ? "push" : "webhook", supported: ["poll"] });
         default:
           if (typeof m.method === "string" && m.method.startsWith("notifications/")) return;
           return fail(RPC.methodNotFound, `method not found: ${m.method}`);
@@ -1112,7 +1168,7 @@ async function handle(m) {
     switch (m?.method) {
       case "initialize": {
         const want = m.params?.protocolVersion;
-        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
+        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: LEGACY_CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
       }
       case "ping":
         return reply({});
@@ -1127,6 +1183,21 @@ async function handle(m) {
         return reply(promptMessages(String(m.params?.name ?? ""), m.params?.arguments));
       case "tools/call":
         return reply(await call());
+      case "events/list":
+        return reply(listEvents());
+      case "events/poll": {
+        const r = await pollEvents(m.params);
+        if (r.result) {
+          const { resultType, ...rest } = r.result;
+          void resultType;
+          return reply(rest);
+        }
+        return failData(r.error.code, r.error.message, r.error.data);
+      }
+      case "events/stream":
+      case "events/subscribe":
+      case "events/unsubscribe":
+        return failData(EVENT_ERR.unsupported, "Unsupported", { feature: "deliveryMode", value: m.method === "events/stream" ? "push" : "webhook", supported: ["poll"] });
       default:
         if (typeof m?.method === "string" && m.method.startsWith("notifications/")) return;
         return fail(RPC.methodNotFound, `method not found: ${m?.method}`);

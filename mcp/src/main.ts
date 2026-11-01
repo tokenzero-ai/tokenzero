@@ -14,15 +14,29 @@ import { fetchRepoFiles } from '../../src/github-fetch.ts';
 import { modelArbitrage } from '../../src/arbitrage.ts';
 import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
+import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
 
-const VERSION = '0.2.11';
+const VERSION = '0.2.12';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
 const BAKED_URL = typeof __TOKENZERO_BAKED__ === 'string' ? __TOKENZERO_BAKED__ : '__TOKENZERO_DEFAULT_URL__';
 const SUPPORTED = [...MCP_LEGACY_VERSIONS];
 const SERVER = { name: 'tokenzero', version: VERSION };
-const CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false } };
+// SEP-3415 Events (poll delivery): extensions on 2026-07-28 server/discover, experimental on legacy initialize.
+const CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, extensions: { [EVENTS_EXTENSION]: {} } };
+const LEGACY_CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, experimental: { [EVENTS_EXTENSION]: {} } };
+const listEvents = () => ({ events: EVENT_TYPES.map(e => ({ ...e, delivery: [...e.delivery] })) });
+/** events/poll runs on the TokenZero service (it reads the workspace ledger); the key comes from TOKENZERO_KEY. */
+async function pollEvents(params: any): Promise<{ result?: any; error?: { code: number; message: string; data?: unknown } }> {
+  const base = serviceUrl();
+  if (!base) return { error: { code: EVENT_ERR.unsupported, message: 'Unsupported', data: { reason: 'set TOKENZERO_URL to poll events' } } };
+  const key = process.env.TOKENZERO_KEY ?? '';
+  const r = await fetch(base + '/v1/events/poll', { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}`, ...(key ? { 'x-tokenzero-key': key } : {}) }, body: JSON.stringify({ name: params?.name, arguments: params?.arguments, cursor: params?.cursor ?? null, maxAgeMs: params?.maxAgeMs, maxEvents: params?.maxEvents }) });
+  const j: any = await r.json().catch(() => null);
+  if (r.ok && j && Array.isArray(j.events)) return { result: j };
+  return { error: j?.error && typeof j.error.code === 'number' ? j.error : { code: RPC.internal, message: `events/poll failed: HTTP ${r.status}` } };
+}
 // Slash-command entry points (same names as the hosted server); the local audit scans this machine, nothing uploaded.
 const PROMPTS = [
   { name: 'cut-my-llm-bill', title: 'Cut my LLM bill', description: 'Find token waste in this project (scanned locally, nothing uploaded) and show the top fixes with estimated savings. No API key needed.', arguments: [{ name: 'repo', description: 'owner/name of a public GitHub repo instead of the local project', required: false }] },
@@ -163,6 +177,9 @@ async function handle(m: any) {
         case 'prompts/list': return reply(modernResult({ prompts: PROMPTS }, SERVER, true));
         case 'prompts/get': return reply(modernResult(promptMessages(String(m.params?.name ?? ''), m.params?.arguments), SERVER));
         case 'tools/call': return reply(modernResult(await call(), SERVER));
+        case 'events/list': return reply(modernResult(listEvents(), SERVER, true));
+        case 'events/poll': { const r = await pollEvents(m.params); return r.result ? reply({ ...r.result, resultType: 'complete', _meta: modernResult({}, SERVER)._meta }) : failData(r.error!.code, r.error!.message, r.error!.data); }
+        case 'events/stream': case 'events/subscribe': case 'events/unsubscribe': return failData(EVENT_ERR.unsupported, 'Unsupported', { feature: 'deliveryMode', value: m.method === 'events/stream' ? 'push' : 'webhook', supported: ['poll'] });
         default:
           if (typeof m.method === 'string' && m.method.startsWith('notifications/')) return;
           return fail(RPC.methodNotFound, `method not found: ${m.method}`);
@@ -171,7 +188,7 @@ async function handle(m: any) {
     switch (m?.method) {
       case 'initialize': {
         const want = m.params?.protocolVersion;
-        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
+        return reply({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: LEGACY_CAPABILITIES, serverInfo: SERVER, instructions: INSTRUCTIONS });
       }
       case 'ping': return reply({});
       // The stdio backward-compatibility probe: a dual-era client sends this first.
@@ -180,6 +197,9 @@ async function handle(m: any) {
       case 'prompts/list': return reply({ prompts: PROMPTS });
       case 'prompts/get': return reply(promptMessages(String(m.params?.name ?? ''), m.params?.arguments));
       case 'tools/call': return reply(await call());
+      case 'events/list': return reply(listEvents());
+      case 'events/poll': { const r = await pollEvents(m.params); if (r.result) { const { resultType, ...rest } = r.result; void resultType; return reply(rest); } return failData(r.error!.code, r.error!.message, r.error!.data); }
+      case 'events/stream': case 'events/subscribe': case 'events/unsubscribe': return failData(EVENT_ERR.unsupported, 'Unsupported', { feature: 'deliveryMode', value: m.method === 'events/stream' ? 'push' : 'webhook', supported: ['poll'] });
       default:
         if (typeof m?.method === 'string' && m.method.startsWith('notifications/')) return;
         return fail(RPC.methodNotFound, `method not found: ${m?.method}`);

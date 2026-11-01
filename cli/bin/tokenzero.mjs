@@ -887,7 +887,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.2.11";
+var VERSION = "0.2.12";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };

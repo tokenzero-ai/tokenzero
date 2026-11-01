@@ -65,7 +65,8 @@ export function validateHttpHeaders(headers: Record<string, string | string[] | 
   const method = h('mcp-method');
   if (!method) return 'missing Mcp-Method header';
   if (method !== m?.method) return `Mcp-Method header '${method}' does not match body value '${m?.method}'`;
-  if (m?.method === 'tools/call' || m?.method === 'resources/read' || m?.method === 'prompts/get') {
+  // SEP-3415: events/poll|stream|subscribe|unsubscribe carry the event name in Mcp-Name, like tools/call.
+  if (m?.method === 'tools/call' || m?.method === 'resources/read' || m?.method === 'prompts/get' || /^events\/(poll|stream|subscribe|unsubscribe)$/.test(m?.method ?? '')) {
     const want = m?.params?.name ?? m?.params?.uri;
     const name = h('mcp-name');
     if (!name) return 'missing Mcp-Name header';

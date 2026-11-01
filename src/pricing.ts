@@ -145,6 +145,18 @@ export const PRICES: Record<string, Price> = {
 /** Retired ids the provider still accepts and bills as the model that replaced them. */
 const MODEL_ALIASES: Record<string, string> = { 'deepseek-v4-flash': 'deepseek-flash', 'deepseek-v4-flash-vision-exp': 'deepseek-flash', 'deepseek-v4.1-flash': 'deepseek-flash', 'deepseek-v4.1-flash-1017': 'deepseek-flash', 'deepseek-v4-pro-0813': 'deepseek-v4-pro', 'gpt-4-turbo-2024-04-09': 'gpt-4-turbo', 'gpt-4': 'gpt-4-0613', 'gpt-3.5-turbo-0125': 'gpt-3.5-turbo' };
 
+/** Per-call tool prices (not token-priced). DeepSeek Search and Fetch: $0.75 per 1,000 successful requests from
+ *  2026-11-01 00:00 Beijing time (api-docs.deepseek.com/quick_start/pricing, read 2026-11-01); free before that. */
+export const TOOL_PRICES: Record<string, { provider: Provider; usdPerCall: number; since: string; source: string }> = {
+  'deepseek-search': { provider: 'deepseek', usdPerCall: 0.00075, since: '2026-10-31T16:00:00Z', source: 'https://api-docs.deepseek.com/quick_start/pricing' },
+  'deepseek-fetch': { provider: 'deepseek', usdPerCall: 0.00075, since: '2026-10-31T16:00:00Z', source: 'https://api-docs.deepseek.com/quick_start/pricing' },
+};
+export function toolCallCost(tool: string, at = Date.now()): number | null {
+  const t = TOOL_PRICES[tool];
+  if (!t) return null;
+  return at >= Date.parse(t.since) ? t.usdPerCall : 0;
+}
+
 /** Cheaper sibling for the opt-in cascade router and arbitrage math. */
 export const CASCADE_TARGET: Record<string, string> = {
   'gpt-6-astra': 'gpt-6.1-sol',
