@@ -25,6 +25,9 @@ var PRICES = {
   "gpt-5.6-luna": P("openai", "fast", 0.2, 1.2, 0.02, 0.25, { longCtxAt: 272e3, longCtx: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite: 0.5 }, minCacheTokens: 1024 }),
   // Daybreak cyber model: access needs OpenAI approval; 400K window
   "gpt-5.6-cyber": P("openai", "frontier", 12.5, 75, 1.25, 15.625, { longCtxAt: 272e3, longCtx: { input: 25, output: 112.5, cachedInput: 2.5, cacheWrite: 31.25 }, minCacheTokens: 1024 }),
+  // 2026-11-01 (developers.openai.com/api/docs/pricing): Astra for Law at Astra rates (promo), Daybreak gpt-5.5-cyber.
+  "gpt-6-astra-law": P("openai", "frontier", 10, 50, 1, void 0, { minCacheTokens: 1024 }),
+  "gpt-5.5-cyber": P("openai", "frontier", 12.5, 75),
   "gpt-5.3-codex": P("openai", "mid", 1.75, 14, 0.175, void 0, { minCacheTokens: 1024 }),
   "gpt-5.5": P("openai", "frontier", 5, 30, 0.5, void 0, { fastFactor: 2.5, longCtxAt: 272e3, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
   "gpt-5.5-pro": P("openai", "frontier", 30, 180),
@@ -44,6 +47,13 @@ var PRICES = {
   "o3-mini": P("openai", "fast", 1.1, 4.4, 0.55, void 0, { minCacheTokens: 1024 }),
   "o4-mini": P("openai", "fast", 1.1, 4.4, 0.275, void 0, { minCacheTokens: 1024 }),
   "o1": P("openai", "frontier", 15, 60, 7.5),
+  "o1-pro": P("openai", "frontier", 150, 600),
+  // Legacy models still on the pricing page: audited repos use them, so receipts and findings price them correctly
+  // instead of falling back to the nearest prefix row (gpt-4o-2024-05-13 is $5/$15, not gpt-4o's $2.50/$10).
+  "gpt-4o-2024-05-13": P("openai", "mid", 5, 15),
+  "gpt-4-turbo": P("openai", "frontier", 10, 30),
+  "gpt-4-0613": P("openai", "frontier", 30, 60),
+  "gpt-3.5-turbo": P("openai", "fast", 0.5, 1.5),
   "gpt-4.1": P("openai", "mid", 2, 8, 0.5, void 0, { fastFactor: 1.75, minCacheTokens: 1024 }),
   "gpt-4.1-mini": P("openai", "fast", 0.4, 1.6, 0.1, void 0, { minCacheTokens: 1024 }),
   "gpt-4.1-nano": P("openai", "fast", 0.1, 0.4, 0.025, void 0, { minCacheTokens: 1024 }),
@@ -87,7 +97,7 @@ var PRICES = {
   "deepseek-v4-pro": P("deepseek", "mid", 1.32, 3.96, 0.044),
   "deepseek-flash": P("deepseek", "fast", 0.3, 1.2, 6e-3)
 };
-var MODEL_ALIASES = { "deepseek-v4-flash": "deepseek-flash", "deepseek-v4-flash-vision-exp": "deepseek-flash" };
+var MODEL_ALIASES = { "deepseek-v4-flash": "deepseek-flash", "deepseek-v4-flash-vision-exp": "deepseek-flash", "deepseek-v4.1-flash": "deepseek-flash", "deepseek-v4.1-flash-1017": "deepseek-flash", "deepseek-v4-pro-0813": "deepseek-v4-pro", "gpt-4-turbo-2024-04-09": "gpt-4-turbo", "gpt-4": "gpt-4-0613", "gpt-3.5-turbo-0125": "gpt-3.5-turbo" };
 var CASCADE_TARGET = {
   "gpt-6-astra": "gpt-6.1-sol",
   "gpt-6.1-sol": "gpt-6.1-terra",
@@ -125,6 +135,7 @@ var CASCADE_TARGET = {
   "gemini-2.5-flash": "gemini-2.5-flash-lite"
 };
 var KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
+var DISTINCT_VARIANT = /^(instruct|audio|realtime|search|transcribe|tts|image|embedding|vision|computer-use|deep-research)\b/;
 function normalizeModel(model) {
   if (typeof model !== "string" || !model) return null;
   let m = model.toLowerCase().trim();
@@ -132,11 +143,12 @@ function normalizeModel(model) {
   m = m.replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|amazon|meta|mistral|openai)\./, "");
   m = m.replace(/-v\d+(?::\d+)?$/, "");
   if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
+  if (PRICES[m]) return m;
   m = m.replace(/@\d{8}$/, "");
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   m = m.replace(/-(latest|preview|customtools|thinking)$/, "");
   if (PRICES[m]) return m;
-  for (const k of KEYS_BY_LENGTH) if (m.startsWith(k + "-") || m === k) return k;
+  for (const k of KEYS_BY_LENGTH) if (m === k || m.startsWith(k + "-") && !DISTINCT_VARIANT.test(m.slice(k.length + 1))) return k;
   return null;
 }
 var isFreeModel = (model) => typeof model === "string" && (/:free$/i.test(model.trim()) || /^openrouter\/free$/i.test(model.trim()));
@@ -875,7 +887,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.2.10";
+var VERSION = "0.2.11";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };

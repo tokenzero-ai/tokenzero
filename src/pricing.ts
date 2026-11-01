@@ -4,7 +4,7 @@
 //
 // Sources: developers.openai.com/api/docs/pricing, ai.google.dev/gemini-api/docs/pricing,
 // platform.claude.com pricing (via the Anthropic model table of the same date).
-export const PRICING_VERSION = '2026-10-28';
+export const PRICING_VERSION = '2026-11-01';
 export const PRICING_MAX_AGE_DAYS = 45;
 
 /**
@@ -13,6 +13,7 @@ export const PRICING_MAX_AGE_DAYS = 45;
  * without PRICING_VERSION moving past it.
  */
 export const PRICING_REVIEWS: { on: string; note: string }[] = [
+  { on: '2027-01-01', note: 'GPT-6 Astra for Law (gpt-6-astra-law) promotional pricing ($10/$50, $1 cached) is guaranteed only through 2026-12-31 (developers.openai.com pricing page)' },
   { on: '2026-11-22', note: 'GPT-5.6 Sol promotional pricing ($4/$20) is guaranteed only through 2026-11-21 (developers.openai.com pricing page)' },
   { on: '2026-12-01', note: 'Gemini 4 Argon input/output/cache prices double (ai.google.dev pricing page)' },
   { on: '2026-12-31', note: 'Some Gemini 3.x Flash / Flash-Lite prices double; check each model' },
@@ -66,6 +67,9 @@ export const PRICES: Record<string, Price> = {
   'gpt-5.6-luna': P('openai', 'fast', 0.2, 1.2, 0.02, 0.25, { longCtxAt: 272_000, longCtx: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite: 0.5 }, minCacheTokens: 1024 }),
   // Daybreak cyber model: access needs OpenAI approval; 400K window
   'gpt-5.6-cyber': P('openai', 'frontier', 12.5, 75, 1.25, 15.625, { longCtxAt: 272_000, longCtx: { input: 25, output: 112.5, cachedInput: 2.5, cacheWrite: 31.25 }, minCacheTokens: 1024 }),
+  // 2026-11-01 (developers.openai.com/api/docs/pricing): Astra for Law at Astra rates (promo), Daybreak gpt-5.5-cyber.
+  'gpt-6-astra-law': P('openai', 'frontier', 10, 50, 1, undefined, { minCacheTokens: 1024 }),
+  'gpt-5.5-cyber': P('openai', 'frontier', 12.5, 75),
   'gpt-5.3-codex': P('openai', 'mid', 1.75, 14, 0.175, undefined, { minCacheTokens: 1024 }),
   'gpt-5.5': P('openai', 'frontier', 5, 30, 0.5, undefined, { fastFactor: 2.5, longCtxAt: 272_000, longCtx: { input: 10, output: 45, cachedInput: 1 }, minCacheTokens: 1024 }),
   'gpt-5.5-pro': P('openai', 'frontier', 30, 180),
@@ -85,6 +89,13 @@ export const PRICES: Record<string, Price> = {
   'o3-mini': P('openai', 'fast', 1.1, 4.4, 0.55, undefined, { minCacheTokens: 1024 }),
   'o4-mini': P('openai', 'fast', 1.1, 4.4, 0.275, undefined, { minCacheTokens: 1024 }),
   'o1': P('openai', 'frontier', 15, 60, 7.5),
+  'o1-pro': P('openai', 'frontier', 150, 600),
+  // Legacy models still on the pricing page: audited repos use them, so receipts and findings price them correctly
+  // instead of falling back to the nearest prefix row (gpt-4o-2024-05-13 is $5/$15, not gpt-4o's $2.50/$10).
+  'gpt-4o-2024-05-13': P('openai', 'mid', 5, 15),
+  'gpt-4-turbo': P('openai', 'frontier', 10, 30),
+  'gpt-4-0613': P('openai', 'frontier', 30, 60),
+  'gpt-3.5-turbo': P('openai', 'fast', 0.5, 1.5),
   'gpt-4.1': P('openai', 'mid', 2, 8, 0.5, undefined, { fastFactor: 1.75, minCacheTokens: 1024 }),
   'gpt-4.1-mini': P('openai', 'fast', 0.4, 1.6, 0.1, undefined, { minCacheTokens: 1024 }),
   'gpt-4.1-nano': P('openai', 'fast', 0.1, 0.4, 0.025, undefined, { minCacheTokens: 1024 }),
@@ -132,7 +143,7 @@ export const PRICES: Record<string, Price> = {
   'deepseek-flash': P('deepseek', 'fast', 0.3, 1.2, 0.006),
 };
 /** Retired ids the provider still accepts and bills as the model that replaced them. */
-const MODEL_ALIASES: Record<string, string> = { 'deepseek-v4-flash': 'deepseek-flash', 'deepseek-v4-flash-vision-exp': 'deepseek-flash' };
+const MODEL_ALIASES: Record<string, string> = { 'deepseek-v4-flash': 'deepseek-flash', 'deepseek-v4-flash-vision-exp': 'deepseek-flash', 'deepseek-v4.1-flash': 'deepseek-flash', 'deepseek-v4.1-flash-1017': 'deepseek-flash', 'deepseek-v4-pro-0813': 'deepseek-v4-pro', 'gpt-4-turbo-2024-04-09': 'gpt-4-turbo', 'gpt-4': 'gpt-4-0613', 'gpt-3.5-turbo-0125': 'gpt-3.5-turbo' };
 
 /** Cheaper sibling for the opt-in cascade router and arbitrage math. */
 export const CASCADE_TARGET: Record<string, string> = {
@@ -180,6 +191,7 @@ const KEYS_BY_LENGTH = Object.keys(PRICES).sort((a, b) => b.length - a.length);
  * ("claude-haiku-4-5-20251001", "gpt-4o-2024-08-06"), Vertex "@" versions and
  * "-preview"/"-latest" tags.
  */
+const DISTINCT_VARIANT = /^(instruct|audio|realtime|search|transcribe|tts|image|embedding|vision|computer-use|deep-research)\b/;
 export function normalizeModel(model: unknown): string | null {
   if (typeof model !== 'string' || !model) return null;
   let m = model.toLowerCase().trim();
@@ -188,11 +200,15 @@ export function normalizeModel(model: unknown): string | null {
   m = m.replace(/^(us|eu|apac|global)\./, '').replace(/^(anthropic|amazon|meta|mistral|openai)\./, '');
   m = m.replace(/-v\d+(?::\d+)?$/, '');
   if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
+  // A dated snapshot with its own price row (gpt-4o-2024-05-13) wins before the date is stripped.
+  if (PRICES[m]) return m;
   m = m.replace(/@\d{8}$/, '');
   m = m.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '');
   m = m.replace(/-(latest|preview|customtools|thinking)$/, '');
   if (PRICES[m]) return m;
-  for (const k of KEYS_BY_LENGTH) if (m.startsWith(k + '-') || m === k) return k;
+  // Prefix fallback covers dated snapshots and suffixes like -2026-03-01 or -high, never a different model sold under a
+  // longer name (gpt-3.5-turbo-instruct, gpt-4o-audio-preview, gpt-4o-realtime, gpt-4o-search): those stay unpriced.
+  for (const k of KEYS_BY_LENGTH) if (m === k || (m.startsWith(k + '-') && !DISTINCT_VARIANT.test(m.slice(k.length + 1)))) return k;
   return null;
 }
 
