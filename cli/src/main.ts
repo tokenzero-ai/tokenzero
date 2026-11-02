@@ -16,7 +16,7 @@ import { walk, manifests } from './scan.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.2.13';
+const VERSION = '0.2.14';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -160,7 +160,7 @@ async function preflightKeys(root: string, base: string) {
     const r = await checkProviderKey(k.key, { provider: k.provider, sandboxUrl });
     const tag = r.verdict === 'valid' || r.verdict === 'rate_limited' ? green('✓') : r.verdict === 'unreachable' || r.verdict === 'unknown' ? yellow('?') : red('✗');
     out(`  ${tag} ${k.variable}: ${r.message}`);
-    if (r.verdict === 'invalid' || r.verdict === 'no_access') { if (r.fix) out(dim(`    ${r.fix}`)); if (r.keyless_sandbox) out(dim(`    No working key yet? Try TokenZero keyless: ${r.keyless_sandbox}`)); }
+    if (r.verdict === 'invalid' || r.verdict === 'no_access' || r.verdict === 'wrong_provider' || r.verdict === 'no_model_access') { if (r.fix) out(dim(`    ${r.fix}${r.link ? ' ' + r.link : ''}`)); if (r.keyless_sandbox) out(dim(`    No working key yet? Try TokenZero keyless: ${r.keyless_sandbox}`)); }
   }
   out();
 }

@@ -17,7 +17,7 @@ import { walk, manifests } from '../../cli/src/scan.ts';
 import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 
-const VERSION = '0.2.13';
+const VERSION = '0.2.14';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
