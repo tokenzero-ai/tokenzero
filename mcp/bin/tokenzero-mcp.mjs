@@ -967,8 +967,98 @@ var EVENT_TYPES = [
   }
 ];
 
+// src/keycheck.ts
+var KEY_ENV = {
+  openai: ["OPENAI_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY"],
+  gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  github: ["GITHUB_TOKEN"]
+};
+var NAME = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", openrouter: "OpenRouter", xai: "xAI", deepseek: "DeepSeek", groq: "Groq", mistral: "Mistral", cerebras: "Cerebras", github: "GitHub Models" };
+var DEFAULT_BASE = {
+  openai: "https://api.openai.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+  openrouter: "https://openrouter.ai",
+  xai: "https://api.x.ai",
+  deepseek: "https://api.deepseek.com",
+  groq: "https://api.groq.com",
+  mistral: "https://api.mistral.ai",
+  cerebras: "https://api.cerebras.ai",
+  github: "https://models.github.ai"
+};
+function providerOfKeyPrefix(key) {
+  const k = key.trim();
+  if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-or-")) return "openrouter";
+  if (k.startsWith("AIza")) return "gemini";
+  if (k.startsWith("xai-")) return "xai";
+  if (k.startsWith("gsk_")) return "groq";
+  if (k.startsWith("csk-")) return "cerebras";
+  if (k.startsWith("ghp_") || k.startsWith("github_pat_")) return "github";
+  if (k.startsWith("sk-")) return "openai";
+  return null;
+}
+function request(p, key, base) {
+  const b = base.replace(/\/+$/, "");
+  switch (p) {
+    case "anthropic":
+      return { url: `${b}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
+    case "gemini":
+      return { url: `${b}/v1beta/models?pageSize=1`, headers: { "x-goog-api-key": key } };
+    case "openrouter":
+      return { url: `${b}/api/v1/key`, headers: { authorization: `Bearer ${key}` } };
+    case "deepseek":
+      return { url: `${b}/models`, headers: { authorization: `Bearer ${key}` } };
+    case "groq":
+      return { url: `${b}/openai/v1/models`, headers: { authorization: `Bearer ${key}` } };
+    case "github":
+      return { url: `${b}/catalog/models`, headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github+json" } };
+    default:
+      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}` } };
+  }
+}
+async function checkProviderKey(key, opts = {}) {
+  const provider = opts.provider ?? providerOfKeyPrefix(key) ?? "openai";
+  const name = NAME[provider];
+  const sandbox = opts.sandboxUrl ? `curl ${opts.sandboxUrl} -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'` : void 0;
+  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider]);
+  let status = null;
+  try {
+    const r = await (opts.fetchImpl ?? fetch)(url, { headers: { ...headers, "user-agent": "tokenzero-keycheck/1" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 8e3), redirect: "manual" });
+    status = r.status;
+    let body = "";
+    try {
+      body = (await r.text()).slice(0, 2e3);
+    } catch {
+    }
+    const geminiBad = provider === "gemini" && r.status === 400 && /API_KEY_INVALID|API key not valid/i.test(body);
+    if (r.ok) return { provider, provider_name: name, ok: true, status, verdict: "valid", message: `${name} accepted this key.` };
+    if (r.status === 401 || geminiBad) return { provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, keyless_sandbox: sandbox };
+    if (r.status === 403) return { provider, provider_name: name, ok: false, status, verdict: "no_access", message: `${name} recognised the key but refused access (HTTP 403): check its permissions, project or billing.`, keyless_sandbox: sandbox };
+    if (r.status === 429) return { provider, provider_name: name, ok: true, status, verdict: "rate_limited", message: `${name} rate-limited the check (HTTP 429); the key itself was accepted.` };
+    return { provider, provider_name: name, ok: false, status, verdict: "unknown", message: `${name} answered HTTP ${r.status}; the key could not be confirmed.` };
+  } catch (e) {
+    return { provider, provider_name: name, ok: false, status, verdict: "unreachable", message: `Could not reach ${name} to check the key (${e?.name === "TimeoutError" ? "timeout" : e?.message ?? e}).` };
+  }
+}
+function keysInEnv(env) {
+  const out = [];
+  for (const [p, vars] of Object.entries(KEY_ENV)) {
+    const v = vars.find((n) => typeof env[n] === "string" && env[n].trim().length >= 8);
+    if (v) out.push({ provider: p, variable: v, key: env[v].trim() });
+  }
+  return out;
+}
+
 // mcp/src/main.ts
-var VERSION = "0.2.12";
+var VERSION = "0.2.13";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -1099,8 +1189,13 @@ async function callTool(name, args) {
       const j = await r.json();
       if (r.status !== 201) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
       const id = j.workspace.id, key = j.key;
+      const provider_keys = process.env.TOKENZERO_KEYCHECK === "0" ? [] : await Promise.all(keysInEnv(process.env).filter((k) => k.provider !== "github").map(async (k) => {
+        const c = await checkProviderKey(k.key, { provider: k.provider, sandboxUrl: `${base}/sandbox/v1/chat/completions` });
+        return { variable: k.variable, provider: c.provider, verdict: c.verdict, message: c.message, ...c.fix ? { fix: c.fix } : {}, ...c.keyless_sandbox ? { keyless_sandbox: c.keyless_sandbox } : {} };
+      }));
       return {
         workspace_id: id,
+        provider_keys,
         name: wsName,
         api_key: key,
         url: base,

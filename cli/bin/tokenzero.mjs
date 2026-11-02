@@ -878,6 +878,96 @@ function manifests(root) {
   });
 }
 
+// src/keycheck.ts
+var KEY_ENV = {
+  openai: ["OPENAI_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY"],
+  gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  github: ["GITHUB_TOKEN"]
+};
+var NAME = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", openrouter: "OpenRouter", xai: "xAI", deepseek: "DeepSeek", groq: "Groq", mistral: "Mistral", cerebras: "Cerebras", github: "GitHub Models" };
+var DEFAULT_BASE = {
+  openai: "https://api.openai.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+  openrouter: "https://openrouter.ai",
+  xai: "https://api.x.ai",
+  deepseek: "https://api.deepseek.com",
+  groq: "https://api.groq.com",
+  mistral: "https://api.mistral.ai",
+  cerebras: "https://api.cerebras.ai",
+  github: "https://models.github.ai"
+};
+function providerOfKeyPrefix(key) {
+  const k = key.trim();
+  if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-or-")) return "openrouter";
+  if (k.startsWith("AIza")) return "gemini";
+  if (k.startsWith("xai-")) return "xai";
+  if (k.startsWith("gsk_")) return "groq";
+  if (k.startsWith("csk-")) return "cerebras";
+  if (k.startsWith("ghp_") || k.startsWith("github_pat_")) return "github";
+  if (k.startsWith("sk-")) return "openai";
+  return null;
+}
+function request(p, key, base) {
+  const b = base.replace(/\/+$/, "");
+  switch (p) {
+    case "anthropic":
+      return { url: `${b}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
+    case "gemini":
+      return { url: `${b}/v1beta/models?pageSize=1`, headers: { "x-goog-api-key": key } };
+    case "openrouter":
+      return { url: `${b}/api/v1/key`, headers: { authorization: `Bearer ${key}` } };
+    case "deepseek":
+      return { url: `${b}/models`, headers: { authorization: `Bearer ${key}` } };
+    case "groq":
+      return { url: `${b}/openai/v1/models`, headers: { authorization: `Bearer ${key}` } };
+    case "github":
+      return { url: `${b}/catalog/models`, headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github+json" } };
+    default:
+      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}` } };
+  }
+}
+async function checkProviderKey(key, opts = {}) {
+  const provider = opts.provider ?? providerOfKeyPrefix(key) ?? "openai";
+  const name = NAME[provider];
+  const sandbox = opts.sandboxUrl ? `curl ${opts.sandboxUrl} -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'` : void 0;
+  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider]);
+  let status = null;
+  try {
+    const r = await (opts.fetchImpl ?? fetch)(url, { headers: { ...headers, "user-agent": "tokenzero-keycheck/1" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 8e3), redirect: "manual" });
+    status = r.status;
+    let body = "";
+    try {
+      body = (await r.text()).slice(0, 2e3);
+    } catch {
+    }
+    const geminiBad = provider === "gemini" && r.status === 400 && /API_KEY_INVALID|API key not valid/i.test(body);
+    if (r.ok) return { provider, provider_name: name, ok: true, status, verdict: "valid", message: `${name} accepted this key.` };
+    if (r.status === 401 || geminiBad) return { provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, keyless_sandbox: sandbox };
+    if (r.status === 403) return { provider, provider_name: name, ok: false, status, verdict: "no_access", message: `${name} recognised the key but refused access (HTTP 403): check its permissions, project or billing.`, keyless_sandbox: sandbox };
+    if (r.status === 429) return { provider, provider_name: name, ok: true, status, verdict: "rate_limited", message: `${name} rate-limited the check (HTTP 429); the key itself was accepted.` };
+    return { provider, provider_name: name, ok: false, status, verdict: "unknown", message: `${name} answered HTTP ${r.status}; the key could not be confirmed.` };
+  } catch (e) {
+    return { provider, provider_name: name, ok: false, status, verdict: "unreachable", message: `Could not reach ${name} to check the key (${e?.name === "TimeoutError" ? "timeout" : e?.message ?? e}).` };
+  }
+}
+function keysInEnv(env) {
+  const out2 = [];
+  for (const [p, vars] of Object.entries(KEY_ENV)) {
+    const v = vars.find((n) => typeof env[n] === "string" && env[n].trim().length >= 8);
+    if (v) out2.push({ provider: p, variable: v, key: env[v].trim() });
+  }
+  return out2;
+}
+
 // src/canonical.ts
 function canonical(obj) {
   if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
@@ -887,7 +977,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.2.12";
+var VERSION = "0.2.13";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -1036,6 +1126,33 @@ function snippet(sdk, lang) {
       return null;
   }
 }
+async function preflightKeys(root, base) {
+  const fileEnv = {};
+  try {
+    for (const line of fs2.readFileSync(path2.join(root, ".env"), "utf8").split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line);
+      if (m) fileEnv[m[1]] = m[2].trim().replace(/^(['"])(.*)\1$/, "$2");
+    }
+  } catch {
+  }
+  const found = keysInEnv({ ...fileEnv, ...process.env }).filter((k) => k.provider !== "github");
+  if (!found.length) {
+    out(`${bold("Provider keys")} ${dim("none found in the environment or .env; set one (e.g. OPENAI_API_KEY) or try the keyless sandbox")}`);
+    return;
+  }
+  out(`${bold("Provider keys")} ${dim("(checked directly with each provider; the key is not sent to TokenZero)")}`);
+  const sandboxUrl = base ? `${base}/sandbox/v1/chat/completions` : void 0;
+  for (const k of found) {
+    const r = await checkProviderKey(k.key, { provider: k.provider, sandboxUrl });
+    const tag = r.verdict === "valid" || r.verdict === "rate_limited" ? green("\u2713") : r.verdict === "unreachable" || r.verdict === "unknown" ? yellow("?") : red("\u2717");
+    out(`  ${tag} ${k.variable}: ${r.message}`);
+    if (r.verdict === "invalid" || r.verdict === "no_access") {
+      if (r.fix) out(dim(`    ${r.fix}`));
+      if (r.keyless_sandbox) out(dim(`    No working key yet? Try TokenZero keyless: ${r.keyless_sandbox}`));
+    }
+  }
+  out();
+}
 async function cmdInit(a) {
   const root = path2.resolve(a._[1] ?? ".");
   const base = baseUrl(a);
@@ -1047,6 +1164,7 @@ async function cmdInit(a) {
   out();
   summarize(report, 5);
   out();
+  if (!a.flags["no-key-check"] && process.env.TOKENZERO_KEYCHECK !== "0") await preflightKeys(root, base);
   if (!base) {
     err(red("No gateway URL. Pass --url https://\u2026 or set TOKENZERO_URL."));
     process.exitCode = 2;
@@ -1512,7 +1630,7 @@ function help() {
 
   ${bold("tokenzero signup")} [--name NAME] [--json]  One command, no form: workspace + key, saved to ~/.config/tokenzero (0600).
   ${bold("tokenzero dashboard")} [--json]        One-click dashboard link for the saved key (key travels in the URL fragment only).
-  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--agent-rules] [--github-action | --no-github-action]
+  ${bold("tokenzero init")} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--no-key-check] [--mcp] [--agent-rules] [--github-action | --no-github-action]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
       Git repositories are offered the PR cost-check workflow; --mcp writes .mcp.json and .cursor/mcp.json; --agent-rules adds an AGENTS.md section.
   ${bold("tokenzero audit")} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]

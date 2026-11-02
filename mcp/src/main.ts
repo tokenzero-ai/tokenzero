@@ -15,8 +15,9 @@ import { modelArbitrage } from '../../src/arbitrage.ts';
 import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
+import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 
-const VERSION = '0.2.12';
+const VERSION = '0.2.13';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
@@ -147,7 +148,13 @@ async function callTool(name: string, args: any): Promise<unknown> {
       const j: any = await r.json();
       if (r.status !== 201) throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
       const id: string = j.workspace.id, key: string = j.key;
-      return { workspace_id: id, name: wsName, api_key: key, url: base, openai_base_url: `${base}/w/${key}/v1`, anthropic_base_url: `${base}/w/${key}`, gemini_native_base_url: `${base}/w/${key}`,
+      // #2668: check the provider keys in this environment directly with each provider (never sent to TokenZero), so an
+      // invalid key is reported now rather than as a 401 on the agent's first proxied call.
+      const provider_keys = process.env.TOKENZERO_KEYCHECK === '0' ? [] : await Promise.all(keysInEnv(process.env).filter(k => k.provider !== 'github').map(async k => {
+        const c = await checkProviderKey(k.key, { provider: k.provider, sandboxUrl: `${base}/sandbox/v1/chat/completions` });
+        return { variable: k.variable, provider: c.provider, verdict: c.verdict, message: c.message, ...(c.fix ? { fix: c.fix } : {}), ...(c.keyless_sandbox ? { keyless_sandbox: c.keyless_sandbox } : {}) };
+      }));
+      return { workspace_id: id, provider_keys, name: wsName, api_key: key, url: base, openai_base_url: `${base}/w/${key}/v1`, anthropic_base_url: `${base}/w/${key}`, gemini_native_base_url: `${base}/w/${key}`,
         dashboard_url: `${base}/dashboard?workspace=${id}`, one_click_dashboard_url: `${base}/dashboard?workspace=${id}#key=${key}`, mcp_url: `${base}/mcp`, badge_svg_url: `${base}/v1/badge/${id}.svg`,
         note: 'Store the key where secrets live (env or a secrets manager), never in the repository. Free up to the monthly free tier; nothing is billed.' };
     }

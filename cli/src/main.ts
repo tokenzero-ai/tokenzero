@@ -13,9 +13,10 @@ import crypto from 'node:crypto';
 import readline from 'node:readline/promises';
 import { analyzeFiles, filesFromDiff, prComment, type AuditReport } from '../../src/audit-core.ts';
 import { walk, manifests } from './scan.ts';
+import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.2.12';
+const VERSION = '0.2.13';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -146,6 +147,24 @@ function snippet(sdk: string, lang: Stack['lang']): string | null {
   }
 }
 
+/** #2668: check the provider keys this project uses, directly with each provider (the key never goes to TokenZero),
+ *  so an invalid key shows up now instead of as a 401 on the first proxied call. Values are never printed. */
+async function preflightKeys(root: string, base: string) {
+  const fileEnv: Record<string, string> = {};
+  try { for (const line of fs.readFileSync(path.join(root, '.env'), 'utf8').split(/\r?\n/)) { const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line); if (m) fileEnv[m[1]] = m[2].trim().replace(/^(['"])(.*)\1$/, '$2'); } } catch { /* no .env */ }
+  const found = keysInEnv({ ...fileEnv, ...process.env }).filter(k => k.provider !== 'github'); // GITHUB_TOKEN is usually for git, not models
+  if (!found.length) { out(`${bold('Provider keys')} ${dim('none found in the environment or .env; set one (e.g. OPENAI_API_KEY) or try the keyless sandbox')}`); return; }
+  out(`${bold('Provider keys')} ${dim('(checked directly with each provider; the key is not sent to TokenZero)')}`);
+  const sandboxUrl = base ? `${base}/sandbox/v1/chat/completions` : undefined;
+  for (const k of found) {
+    const r = await checkProviderKey(k.key, { provider: k.provider, sandboxUrl });
+    const tag = r.verdict === 'valid' || r.verdict === 'rate_limited' ? green('✓') : r.verdict === 'unreachable' || r.verdict === 'unknown' ? yellow('?') : red('✗');
+    out(`  ${tag} ${k.variable}: ${r.message}`);
+    if (r.verdict === 'invalid' || r.verdict === 'no_access') { if (r.fix) out(dim(`    ${r.fix}`)); if (r.keyless_sandbox) out(dim(`    No working key yet? Try TokenZero keyless: ${r.keyless_sandbox}`)); }
+  }
+  out();
+}
+
 async function cmdInit(a: Args) {
   const root = path.resolve((a._[1] as string) ?? '.');
   const base = baseUrl(a);
@@ -156,6 +175,7 @@ async function cmdInit(a: Args) {
   const report = analyzeFiles(walk(root), null, manifests(root));
   out(); summarize(report, 5); out();
 
+  if (!a.flags['no-key-check'] && process.env.TOKENZERO_KEYCHECK !== '0') await preflightKeys(root, base);
   if (!base) { err(red('No gateway URL. Pass --url https://… or set TOKENZERO_URL.')); process.exitCode = 2; return; }
 
   // Workspace: created server-side; the key is shown once and written only where you agree.
@@ -476,7 +496,7 @@ function help() {
 
   ${bold('tokenzero signup')} [--name NAME] [--json]  One command, no form: workspace + key, saved to ~/.config/tokenzero (0600).
   ${bold('tokenzero dashboard')} [--json]        One-click dashboard link for the saved key (key travels in the URL fragment only).
-  ${bold('tokenzero init')} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--mcp] [--agent-rules] [--github-action | --no-github-action]
+  ${bold('tokenzero init')} [dir] [--url URL] [--name NAME] [--yes] [--no-env] [--no-key-check] [--mcp] [--agent-rules] [--github-action | --no-github-action]
       Audit locally, create a workspace, point OPENAI_BASE_URL / ANTHROPIC_BASE_URL at the gateway.
       Git repositories are offered the PR cost-check workflow; --mcp writes .mcp.json and .cursor/mcp.json; --agent-rules adds an AGENTS.md section.
   ${bold('tokenzero audit')} [dir] [--json | --format markdown] [--diff file|-] [--fail-over PCT]

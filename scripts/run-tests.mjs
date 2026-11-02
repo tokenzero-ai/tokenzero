@@ -33,6 +33,8 @@ if (!native) {
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-tests-'));
 const env = { ...process.env, TOKENZERO_DATA_DIR: dataDir };
 delete env.TOKENZERO_DB;
-const r = spawnSync(process.execPath, ['--no-warnings', '--test', ...target], { stdio: 'inherit', env });
+// TOKENZERO_TEST_CONCURRENCY caps parallel test files (a shared dev host under memory pressure gates with 2).
+const conc = Number(process.env.TOKENZERO_TEST_CONCURRENCY) > 0 ? [`--test-concurrency=${Math.floor(Number(process.env.TOKENZERO_TEST_CONCURRENCY))}`] : [];
+const r = spawnSync(process.execPath, ['--no-warnings', '--test', ...conc, ...target], { stdio: 'inherit', env });
 fs.rmSync(dataDir, { recursive: true, force: true });
 process.exit(r.status ?? 1);
