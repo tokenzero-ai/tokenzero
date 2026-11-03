@@ -1064,6 +1064,7 @@ function keysInEnv(env) {
   }
   return out;
 }
+var STATUS_PAGE = { openai: "https://status.openai.com", anthropic: "https://status.anthropic.com", gemini: "https://aistudio.google.com/status", openrouter: "https://status.openrouter.ai", xai: "https://status.x.ai", deepseek: "https://status.deepseek.com", github: "https://www.githubstatus.com" };
 var CONSOLE = {
   openai: { keys: "https://platform.openai.com/api-keys", billing: "https://platform.openai.com/settings/organization/billing/overview" },
   anthropic: { keys: "https://console.anthropic.com/settings/keys", billing: "https://console.anthropic.com/settings/billing" },
@@ -1092,14 +1093,25 @@ function classifyProviderError(provider, status, body, opts = {}) {
     return { cause: "no_model_access", message: `${name} accepted the key, but it has no access to ${opts.model ? `model "${opts.model}"` : "the requested model"}.`, fix: `Pick a model this key can use (GET the provider's models list) or request access for this model.`, link: c.keys };
   if (status === 403) return { cause: "permission", message: `${name} recognised the key but refused this request (HTTP 403): check the key's permissions, project or region.`, fix: `Open the key's settings and allow this API/model, or create a key with full access.`, link: c.keys };
   if (status === 429) return { cause: "rate_limited", message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: "Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.", link: c.keys };
+  const sp = STATUS_PAGE[provider] ?? c.keys;
+  if (status === 413 || /request entity too large|payload too large|request too large/.test(b))
+    return { cause: "payload_too_large", message: `${name} refused the request as too large (HTTP ${status}).`, fix: "Send fewer or smaller messages/attachments, or split the request.", link: c.keys };
+  if (status === 400 && /context length|context_length|maximum context|context window|too many tokens|prompt is too long|input is too long|max_tokens.*exceed|exceeds the maximum/.test(b))
+    return { cause: "context_length", message: `${name} rejected the request: the prompt plus max_tokens is longer than ${opts.model ? `"${opts.model}"` : "the model"} accepts.`, fix: "Trim the conversation history or lower max_tokens, or use a model with a longer context window.", link: c.keys };
+  if (status === 404) return { cause: "not_found", message: `${name} has no such endpoint or model here (HTTP 404)${opts.model ? ` for "${opts.model}"` : ""}.`, fix: `Check the model id against the ${name} models list and that the SDK base URL ends in /v1.`, link: c.keys };
+  if (status === 408 || status === 504 || status === 524) return { cause: "timeout", message: `${name} timed out answering (HTTP ${status}); nothing is wrong with the key.`, fix: "Retry, lower max_tokens, or send X-TokenZero-Fallback: auto to retry and fail over automatically.", link: sp };
+  if (status >= 500) return { cause: "upstream_error", message: `${name} had an error on its side (HTTP ${status}${status === 529 ? ", overloaded" : ""}); nothing is wrong with the key or the request.`, fix: "Retry in a moment, or send X-TokenZero-Fallback: auto to retry with jitter and fail over automatically.", link: sp };
+  if (status === 0) return { cause: "unreachable", message: `${name} could not be reached from TokenZero.`, fix: "Retry in a moment, or send X-TokenZero-Fallback: auto to fail over automatically.", link: sp };
+  if (status >= 400) return { cause: "bad_request", message: `${name} rejected the request itself (HTTP ${status}), not the key.`, fix: "Fix the parameter the provider names below (model id, message format or an unsupported field), then retry.", link: c.keys };
   return null;
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.14";
+var VERSION = "0.2.15";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
+var NEXT_STEP_META = { "io.tokenzero/next-step": { tool: "try_tokenzero", arguments: {}, why: "Needs no API key or setup and always succeeds: one priced call with the saving and a signed receipt. Run it first." } };
 var CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, extensions: { [EVENTS_EXTENSION]: {} } };
 var LEGACY_CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, experimental: { [EVENTS_EXTENSION]: {} } };
 var listEvents = () => ({ events: EVENT_TYPES.map((e) => ({ ...e, delivery: [...e.delivery] })) });
@@ -1275,8 +1287,10 @@ async function handle(m) {
       switch (m.method) {
         case "server/discover":
           return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
-        case "tools/list":
-          return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case "tools/list": {
+          const r = modernResult({ tools: TOOLS }, SERVER, true);
+          return reply({ ...r, _meta: { ...r._meta, ...NEXT_STEP_META } });
+        }
         case "prompts/list":
           return reply(modernResult({ prompts: PROMPTS }, SERVER, true));
         case "prompts/get":
@@ -1309,7 +1323,7 @@ async function handle(m) {
       case "server/discover":
         return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
       case "tools/list":
-        return reply({ tools: TOOLS });
+        return reply({ tools: TOOLS, _meta: NEXT_STEP_META });
       case "prompts/list":
         return reply({ prompts: PROMPTS });
       case "prompts/get":

@@ -17,13 +17,15 @@ import { walk, manifests } from '../../cli/src/scan.ts';
 import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 
-const VERSION = '0.2.14';
+const VERSION = '0.2.15';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
 const BAKED_URL = typeof __TOKENZERO_BAKED__ === 'string' ? __TOKENZERO_BAKED__ : '__TOKENZERO_DEFAULT_URL__';
 const SUPPORTED = [...MCP_LEGACY_VERSIONS];
 const SERVER = { name: 'tokenzero', version: VERSION };
+// #2789: the one next step after listing tools: a call that always succeeds (no key, no setup).
+const NEXT_STEP_META = { 'io.tokenzero/next-step': { tool: 'try_tokenzero', arguments: {}, why: 'Needs no API key or setup and always succeeds: one priced call with the saving and a signed receipt. Run it first.' } };
 // SEP-3415 Events (poll delivery): extensions on 2026-07-28 server/discover, experimental on legacy initialize.
 const CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, extensions: { [EVENTS_EXTENSION]: {} } };
 const LEGACY_CAPABILITIES = { tools: { listChanged: false }, prompts: { listChanged: false }, experimental: { [EVENTS_EXTENSION]: {} } };
@@ -180,7 +182,7 @@ async function handle(m: any) {
       if (!versionSupported(v)) { const e = unsupportedVersionError(v); return failData(e.code, e.message, e.data); }
       switch (m.method) {
         case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
-        case 'tools/list': return reply(modernResult({ tools: TOOLS }, SERVER, true));
+        case 'tools/list': { const r = modernResult({ tools: TOOLS }, SERVER, true); return reply({ ...r, _meta: { ...r._meta, ...NEXT_STEP_META } }); }
         case 'prompts/list': return reply(modernResult({ prompts: PROMPTS }, SERVER, true));
         case 'prompts/get': return reply(modernResult(promptMessages(String(m.params?.name ?? ''), m.params?.arguments), SERVER));
         case 'tools/call': return reply(modernResult(await call(), SERVER));
@@ -200,7 +202,7 @@ async function handle(m: any) {
       case 'ping': return reply({});
       // The stdio backward-compatibility probe: a dual-era client sends this first.
       case 'server/discover': return reply(discoverResult(SERVER, CAPABILITIES, INSTRUCTIONS));
-      case 'tools/list': return reply({ tools: TOOLS });
+      case 'tools/list': return reply({ tools: TOOLS, _meta: NEXT_STEP_META });
       case 'prompts/list': return reply({ prompts: PROMPTS });
       case 'prompts/get': return reply(promptMessages(String(m.params?.name ?? ''), m.params?.arguments));
       case 'tools/call': return reply(await call());
