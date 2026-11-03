@@ -28,27 +28,29 @@ export function providerOfKeyPrefix(key: string): CheckProvider | null {
   return null;
 }
 
-function request(p: CheckProvider, key: string, base: string): { url: string; headers: Record<string, string> } {
+function request(p: CheckProvider, key: string, base: string, scheme: 'bearer' | 'x-api-key' = 'x-api-key', extra: Record<string, string> = {}): { url: string; headers: Record<string, string> } {
   const b = base.replace(/\/+$/, '');
   switch (p) {
-    case 'anthropic': return { url: `${b}/v1/models?limit=1`, headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } };
+    // #3024: the same scheme the caller uses (Anthropic's primary scheme is Authorization: Bearer, which is also the only one
+    // short-lived WIF/OAuth access tokens accept), plus the caller's anthropic-workspace-id for keys not scoped to a workspace.
+    case 'anthropic': return { url: `${b}/v1/models?limit=1`, headers: { ...(scheme === 'bearer' ? { authorization: `Bearer ${key}` } : { 'x-api-key': key }), 'anthropic-version': '2023-06-01', ...extra } };
     case 'gemini': return { url: `${b}/v1beta/models?pageSize=1`, headers: { 'x-goog-api-key': key } };
     case 'openrouter': return { url: `${b}/api/v1/key`, headers: { authorization: `Bearer ${key}` } };
     case 'deepseek': return { url: `${b}/models`, headers: { authorization: `Bearer ${key}` } };
     case 'groq': return { url: `${b}/openai/v1/models`, headers: { authorization: `Bearer ${key}` } };
     case 'github': return { url: `${b}/catalog/models`, headers: { authorization: `Bearer ${key}`, accept: 'application/vnd.github+json' } };
-    default: return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}` } };
+    default: return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}`, ...extra } };
   }
 }
 
-export interface KeyCheck { provider: CheckProvider; provider_name: string; ok: boolean; status: number | null; verdict: 'valid' | 'invalid' | 'wrong_provider' | 'no_access' | 'no_model_access' | 'rate_limited' | 'unreachable' | 'unknown'; message: string; fix?: string; link?: string; keyless_sandbox?: string }
+export interface KeyCheck { provider: CheckProvider; provider_name: string; ok: boolean; status: number | null; verdict: 'valid' | 'invalid' | 'wrong_provider' | 'no_access' | 'no_model_access' | 'rate_limited' | 'unreachable' | 'unknown'; message: string; fix?: string; link?: string; keyless_sandbox?: string; /** the provider's own error message, verbatim (first 300 chars) */ provider_error?: string }
 
 /** Ask the provider whether `key` is accepted. Never throws; `fetchImpl`/`base` exist for tests. */
-export async function checkProviderKey(key: string, opts: { provider?: CheckProvider | null; base?: string; sandboxUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; model?: string | null } = {}): Promise<KeyCheck> {
+export async function checkProviderKey(key: string, opts: { provider?: CheckProvider | null; base?: string; sandboxUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; model?: string | null; scheme?: 'bearer' | 'x-api-key'; headers?: Record<string, string> } = {}): Promise<KeyCheck> {
   const provider = opts.provider ?? providerOfKeyPrefix(key) ?? 'openai';
   const name = NAME[provider];
   const sandbox = opts.sandboxUrl ? `curl ${opts.sandboxUrl} -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'` : undefined;
-  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider]);
+  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider], opts.scheme, opts.headers);
   let status: number | null = null;
   try {
     const r = await (opts.fetchImpl ?? fetch)(url, { headers: { ...headers, 'user-agent': 'tokenzero-keycheck/1' }, signal: AbortSignal.timeout(opts.timeoutMs ?? 8_000), redirect: 'manual' });
@@ -64,8 +66,9 @@ export async function checkProviderKey(key: string, opts: { provider?: CheckProv
       return { provider, provider_name: name, ok: true, status, verdict: 'valid', message: `${name} accepted this key.`, link: CONSOLE[provider].keys };
     }
     const rem = classifyProviderError(provider, r.status, body, { key, model: opts.model });
-    if (rem?.cause === 'wrong_provider') return { provider, provider_name: name, ok: false, status, verdict: 'wrong_provider', message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox };
-    if (r.status === 401 || geminiBad) return { provider, provider_name: name, ok: false, status, verdict: 'invalid', message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
+    let pe: string | undefined; try { const j = JSON.parse(body); pe = String(j?.error?.message ?? j?.message ?? j?.error ?? '').slice(0, 300) || undefined; } catch { pe = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) || undefined; }
+    if (rem?.cause === 'wrong_provider') return { provider, provider_name: name, ok: false, status, verdict: 'wrong_provider', message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox, provider_error: pe };
+    if (r.status === 401 || geminiBad) return { provider_error: pe, provider, provider_name: name, ok: false, status, verdict: 'invalid', message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 403) return { provider, provider_name: name, ok: false, status, verdict: 'no_access', message: `${name} recognised the key but refused access (HTTP 403): check its permissions, project or billing.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 429) return { provider, provider_name: name, ok: true, status, verdict: 'rate_limited', message: `${name} rate-limited the check (HTTP 429); the key itself was accepted.` };
     return { provider, provider_name: name, ok: false, status, verdict: 'unknown', message: `${name} answered HTTP ${r.status}; the key could not be confirmed.` };
@@ -85,7 +88,7 @@ export function keysInEnv(env: Record<string, string | undefined>): { provider: 
 }
 
 // ---- #2725: one map from a provider's error to the specific cause, fix and console page --------------------------
-export type FailureCause = 'invalid_key' | 'wrong_provider' | 'no_model_access' | 'billing' | 'permission' | 'rate_limited' | 'context_length' | 'bad_request' | 'not_found' | 'payload_too_large' | 'timeout' | 'upstream_error' | 'unreachable' | 'unknown';
+export type FailureCause = 'invalid_key' | 'wrong_provider' | 'workspace_required' | 'org_project_mismatch' | 'no_model_access' | 'billing' | 'permission' | 'rate_limited' | 'context_length' | 'bad_request' | 'not_found' | 'payload_too_large' | 'timeout' | 'upstream_error' | 'unreachable' | 'unknown';
 /** Provider status pages, for failures on the provider's side (5xx, timeouts, unreachable). */
 export const STATUS_PAGE: Partial<Record<CheckProvider, string>> = { openai: 'https://status.openai.com', anthropic: 'https://status.anthropic.com', gemini: 'https://aistudio.google.com/status', openrouter: 'https://status.openrouter.ai', xai: 'https://status.x.ai', deepseek: 'https://status.deepseek.com', github: 'https://www.githubstatus.com' };
 export const CONSOLE: Record<CheckProvider, { keys: string; billing?: string }> = {
@@ -107,6 +110,9 @@ export function classifyProviderError(provider: CheckProvider, status: number, b
   const name = NAME[provider], c = CONSOLE[provider], b = body.toLowerCase();
   const keyProvider = opts.key ? providerOfKeyPrefix(opts.key) : null;
   const env = KEY_ENV[provider][0];
+  // #3024: OpenAI keys that are valid but sent with an OpenAI-Organization / OpenAI-Project header they do not belong to.
+  if (provider === 'openai' && (status === 401 || status === 403) && /openai-organization|openai-project|mismatched_organization|mismatched_project|does not match.*(organization|project)|not.*member of.*organization/.test(b))
+    return { cause: 'org_project_mismatch', message: 'OpenAI accepted the key, but the OpenAI-Organization or OpenAI-Project header sent with it does not match the key.', fix: 'Remove the OpenAI-Organization / OpenAI-Project headers, or set them to the org and project the key belongs to (a project key sk-proj-… needs no project header).', link: c.keys };
   if (status === 401 || (provider === 'gemini' && status === 400 && /api_key_invalid|api key not valid/.test(b)) || (provider === 'openrouter' && /user not found|no auth credentials/.test(b))) {
     if (keyProvider && keyProvider !== provider && !(keyProvider === 'openai' && provider === 'deepseek'))
       return { cause: 'wrong_provider', message: `This looks like a ${NAME[keyProvider]} key, but the request went to ${name}.`, fix: `Use a model from ${NAME[keyProvider]} with this key, or send X-TokenZero-Provider: ${keyProvider}.`, link: CONSOLE[keyProvider].keys };
@@ -121,6 +127,9 @@ export function classifyProviderError(provider: CheckProvider, status: number, b
   if (status === 429) return { cause: 'rate_limited', message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: 'Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.', link: c.keys };
   // Everything else a provider can answer: one specific cause per class, never a raw error (#2789).
   const sp = STATUS_PAGE[provider] ?? c.keys;
+  // #3024: Anthropic keys not scoped to a workspace need anthropic-workspace-id on every request.
+  if (provider === 'anthropic' && (status === 400 || status === 404) && /anthropic-workspace-id|not scoped to a workspace|workspace `?[\w-]*`? not found/.test(b))
+    return { cause: 'workspace_required', message: status === 404 ? 'Anthropic accepted the key, but the workspace in anthropic-workspace-id does not exist or the key has no access to it.' : 'Anthropic accepted the key, but it is not scoped to a workspace, so each request must name one.', fix: 'Send anthropic-workspace-id: <wrkspc_…> (the ID column on the Console Workspaces page) with each request, or use a key scoped to one workspace.', link: 'https://platform.claude.com/settings/workspaces' };
   if (status === 413 || /request entity too large|payload too large|request too large/.test(b))
     return { cause: 'payload_too_large', message: `${name} refused the request as too large (HTTP ${status}).`, fix: 'Send fewer or smaller messages/attachments, or split the request.', link: c.keys };
   if (status === 400 && /context length|context_length|maximum context|context window|too many tokens|prompt is too long|input is too long|max_tokens.*exceed|exceeds the maximum/.test(b))

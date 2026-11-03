@@ -17,7 +17,7 @@ import { walk, manifests } from '../../cli/src/scan.ts';
 import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 
-const VERSION = '0.2.15';
+const VERSION = '0.2.16';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
@@ -103,6 +103,17 @@ const TOOLS = [
   },
 ];
 
+/** #3082: the host's self-reported clientInfo (Claude Desktop, Cursor...) from its local initialize, or from 2026-07-28 request
+ *  _meta, forwarded on hosted tool calls as io.tokenzero/host so the service can attribute them. Name, version, protocol only. */
+let host: { name?: string; version?: string; protocolVersion?: string } | null = null;
+function noteHost(m: any) {
+  const ci = m?.params?.clientInfo ?? m?.params?._meta?.['io.modelcontextprotocol/clientInfo'];
+  const s = (v: unknown) => typeof v === 'string' && v ? v.slice(0, 80) : undefined;
+  const pv = s(m?.params?.protocolVersion ?? m?.params?._meta?.['io.modelcontextprotocol/protocolVersion']);
+  if (s(ci?.name)) host = { name: s(ci.name), version: s(ci?.version), protocolVersion: pv ?? host?.protocolVersion };
+  else if (host && pv) host = { ...host, protocolVersion: pv };
+}
+
 async function callTool(name: string, args: any): Promise<unknown> {
   switch (name) {
     case 'audit_repo_token_waste': {
@@ -120,7 +131,7 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case 'optimize_prompt_payload': {
       const base = serviceUrl();
       if (!base) throw new Error('set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)');
-      const r = await fetch(base + '/mcp', { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+      const r = await fetch(base + '/mcp', { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { 'content-type': 'application/json', 'user-agent': `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args, ...(host ? { _meta: { 'io.tokenzero/host': host } } : {}) } }) })
         .catch((e: any) => { throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`); });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
       const j: any = await r.json();
@@ -175,6 +186,7 @@ async function handle(m: any) {
     try { const r = await callTool(m.params?.name, m.params?.arguments ?? {}); return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }], structuredContent: r, isError: false }; }
     catch (e: any) { return { content: [{ type: 'text', text: `error: ${e?.message ?? e}` }], isError: true }; }
   };
+  if (m?.method === 'initialize' || isModern(m)) noteHost(m);
   try {
     if (isModern(m)) {
       // ---- 2026-07-28: no handshake; version and identity travel on every request ----

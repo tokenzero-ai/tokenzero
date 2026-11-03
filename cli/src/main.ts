@@ -16,7 +16,7 @@ import { walk, manifests } from './scan.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.2.15';
+const VERSION = '0.2.16';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
@@ -375,6 +375,19 @@ async function cmdAudit(a: Args) {
   }
 }
 
+// #2858 (3): opt-in savings-report email for this workspace. Nothing is gated on it; `--remove` takes it off.
+async function cmdClaim(a: Args) {
+  const saved = loadCreds(); const base = baseUrl(a) || saved?.url || 'https://tokenzero.sh'; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
+  if (!key) { err(red('claim: no workspace key. Run `npx tokenzero init` first, or pass --key / TOKENZERO_KEY.')); process.exitCode = 1; return; }
+  const h = { 'x-tokenzero-key': key, 'content-type': 'application/json' };
+  if (a.flags.remove) { const r = await api(base, '/v1/workspaces/me/claim', { method: 'DELETE', headers: h }); out(r.status === 200 ? green('Removed: this workspace has no contact email now.') : red(`claim: ${r.status}`)); return; }
+  const email = a._[1];
+  if (!email) { const r = await api(base, '/v1/workspaces/me/claim', { headers: h }); out(r.body?.claimed ? `Claimed (${r.body.source}, since ${r.body.since}). Remove: npx tokenzero claim --remove` : 'Not claimed. Optional: npx tokenzero claim you@example.com  (weekly savings report; free use never needs it)'); return; }
+  const r = await api(base, '/v1/workspaces/me/claim', { method: 'POST', headers: h, body: JSON.stringify({ email, consent: true, source: 'cli' }) });
+  if (r.status !== 200) { err(red(`claim: ${r.status} ${r.body?.error?.message ?? ''}`)); process.exitCode = 1; return; }
+  out(green('Claimed.') + ' This address is used only for this workspace\'s savings emails. Remove any time: npx tokenzero claim --remove');
+}
+
 async function cmdMetrics(a: Args) {
   const saved = loadCreds(); const base = baseUrl(a) || saved?.url || 'https://tokenzero.sh'; const key = (a.flags.key as string) || process.env.TOKENZERO_KEY || saved?.api_key || '';
   const w = ['24h', '7d', '30d', 'all'].includes(String(a.flags.window)) ? String(a.flags.window) : '30d';
@@ -504,6 +517,7 @@ function help() {
   ${bold('tokenzero usage')} [--json]          Routed spend vs the free tier, savings, fee preview.
   ${bold('tokenzero doctor')} [--key K] [--json] Six-check connection and receipt doctor: gateway, signer, pricing, key, quota, settings.
   ${bold('tokenzero metrics')} [--window 24h|7d|30d|all] [--key K] [--json] [--demo]  Value scorecard: savings, ROI, engines, speed, parity, reliability, per-model, recommendations.
+  ${bold('tokenzero claim')} [email] [--remove]  Optional: a weekly savings report email for this workspace (opt-in, never required).
   ${bold('tokenzero verify')} <request_id>     Verify a savings receipt's signature offline.
   ${bold('tokenzero verify --chain')} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold('tokenzero rotate-key')} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
@@ -525,6 +539,7 @@ async function main() {
     case 'usage': return cmdUsage(a);
     case 'doctor': return cmdDoctor(a);
     case 'metrics': return cmdMetrics(a);
+    case 'claim': return cmdClaim(a);
     case 'verify': return cmdVerify(a);
     case 'rotate-key': return cmdRotate(a);
     case undefined: case 'help': return help();

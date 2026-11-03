@@ -1005,11 +1005,13 @@ function providerOfKeyPrefix(key) {
   if (k.startsWith("sk-")) return "openai";
   return null;
 }
-function request(p, key, base) {
+function request(p, key, base, scheme = "x-api-key", extra = {}) {
   const b = base.replace(/\/+$/, "");
   switch (p) {
+    // #3024: the same scheme the caller uses (Anthropic's primary scheme is Authorization: Bearer, which is also the only one
+    // short-lived WIF/OAuth access tokens accept), plus the caller's anthropic-workspace-id for keys not scoped to a workspace.
     case "anthropic":
-      return { url: `${b}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
+      return { url: `${b}/v1/models?limit=1`, headers: { ...scheme === "bearer" ? { authorization: `Bearer ${key}` } : { "x-api-key": key }, "anthropic-version": "2023-06-01", ...extra } };
     case "gemini":
       return { url: `${b}/v1beta/models?pageSize=1`, headers: { "x-goog-api-key": key } };
     case "openrouter":
@@ -1021,14 +1023,14 @@ function request(p, key, base) {
     case "github":
       return { url: `${b}/catalog/models`, headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github+json" } };
     default:
-      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}` } };
+      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}`, ...extra } };
   }
 }
 async function checkProviderKey(key, opts = {}) {
   const provider = opts.provider ?? providerOfKeyPrefix(key) ?? "openai";
   const name = NAME[provider];
   const sandbox = opts.sandboxUrl ? `curl ${opts.sandboxUrl} -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'` : void 0;
-  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider]);
+  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider], opts.scheme, opts.headers);
   let status = null;
   try {
     const r = await (opts.fetchImpl ?? fetch)(url, { headers: { ...headers, "user-agent": "tokenzero-keycheck/1" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 8e3), redirect: "manual" });
@@ -1047,8 +1049,15 @@ async function checkProviderKey(key, opts = {}) {
       return { provider, provider_name: name, ok: true, status, verdict: "valid", message: `${name} accepted this key.`, link: CONSOLE[provider].keys };
     }
     const rem = classifyProviderError(provider, r.status, body, { key, model: opts.model });
-    if (rem?.cause === "wrong_provider") return { provider, provider_name: name, ok: false, status, verdict: "wrong_provider", message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox };
-    if (r.status === 401 || geminiBad) return { provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
+    let pe;
+    try {
+      const j = JSON.parse(body);
+      pe = String(j?.error?.message ?? j?.message ?? j?.error ?? "").slice(0, 300) || void 0;
+    } catch {
+      pe = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || void 0;
+    }
+    if (rem?.cause === "wrong_provider") return { provider, provider_name: name, ok: false, status, verdict: "wrong_provider", message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox, provider_error: pe };
+    if (r.status === 401 || geminiBad) return { provider_error: pe, provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 403) return { provider, provider_name: name, ok: false, status, verdict: "no_access", message: `${name} recognised the key but refused access (HTTP 403): check its permissions, project or billing.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 429) return { provider, provider_name: name, ok: true, status, verdict: "rate_limited", message: `${name} rate-limited the check (HTTP 429); the key itself was accepted.` };
     return { provider, provider_name: name, ok: false, status, verdict: "unknown", message: `${name} answered HTTP ${r.status}; the key could not be confirmed.` };
@@ -1081,6 +1090,8 @@ function classifyProviderError(provider, status, body, opts = {}) {
   const name = NAME[provider], c = CONSOLE[provider], b = body.toLowerCase();
   const keyProvider2 = opts.key ? providerOfKeyPrefix(opts.key) : null;
   const env = KEY_ENV[provider][0];
+  if (provider === "openai" && (status === 401 || status === 403) && /openai-organization|openai-project|mismatched_organization|mismatched_project|does not match.*(organization|project)|not.*member of.*organization/.test(b))
+    return { cause: "org_project_mismatch", message: "OpenAI accepted the key, but the OpenAI-Organization or OpenAI-Project header sent with it does not match the key.", fix: "Remove the OpenAI-Organization / OpenAI-Project headers, or set them to the org and project the key belongs to (a project key sk-proj-\u2026 needs no project header).", link: c.keys };
   if (status === 401 || provider === "gemini" && status === 400 && /api_key_invalid|api key not valid/.test(b) || provider === "openrouter" && /user not found|no auth credentials/.test(b)) {
     if (keyProvider2 && keyProvider2 !== provider && !(keyProvider2 === "openai" && provider === "deepseek"))
       return { cause: "wrong_provider", message: `This looks like a ${NAME[keyProvider2]} key, but the request went to ${name}.`, fix: `Use a model from ${NAME[keyProvider2]} with this key, or send X-TokenZero-Provider: ${keyProvider2}.`, link: CONSOLE[keyProvider2].keys };
@@ -1094,6 +1105,8 @@ function classifyProviderError(provider, status, body, opts = {}) {
   if (status === 403) return { cause: "permission", message: `${name} recognised the key but refused this request (HTTP 403): check the key's permissions, project or region.`, fix: `Open the key's settings and allow this API/model, or create a key with full access.`, link: c.keys };
   if (status === 429) return { cause: "rate_limited", message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: "Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.", link: c.keys };
   const sp = STATUS_PAGE[provider] ?? c.keys;
+  if (provider === "anthropic" && (status === 400 || status === 404) && /anthropic-workspace-id|not scoped to a workspace|workspace `?[\w-]*`? not found/.test(b))
+    return { cause: "workspace_required", message: status === 404 ? "Anthropic accepted the key, but the workspace in anthropic-workspace-id does not exist or the key has no access to it." : "Anthropic accepted the key, but it is not scoped to a workspace, so each request must name one.", fix: "Send anthropic-workspace-id: <wrkspc_\u2026> (the ID column on the Console Workspaces page) with each request, or use a key scoped to one workspace.", link: "https://platform.claude.com/settings/workspaces" };
   if (status === 413 || /request entity too large|payload too large|request too large/.test(b))
     return { cause: "payload_too_large", message: `${name} refused the request as too large (HTTP ${status}).`, fix: "Send fewer or smaller messages/attachments, or split the request.", link: c.keys };
   if (status === 400 && /context length|context_length|maximum context|context window|too many tokens|prompt is too long|input is too long|max_tokens.*exceed|exceeds the maximum/.test(b))
@@ -1107,7 +1120,7 @@ function classifyProviderError(provider, status, body, opts = {}) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.15";
+var VERSION = "0.2.16";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -1188,6 +1201,14 @@ var TOOLS = [
     inputSchema: { type: "object", properties: { name: { type: "string", description: 'workspace name (defaults to "mcp-agent")' } }, additionalProperties: false }
   }
 ];
+var host = null;
+function noteHost(m) {
+  const ci = m?.params?.clientInfo ?? m?.params?._meta?.["io.modelcontextprotocol/clientInfo"];
+  const s = (v) => typeof v === "string" && v ? v.slice(0, 80) : void 0;
+  const pv = s(m?.params?.protocolVersion ?? m?.params?._meta?.["io.modelcontextprotocol/protocolVersion"]);
+  if (s(ci?.name)) host = { name: s(ci.name), version: s(ci?.version), protocolVersion: pv ?? host?.protocolVersion };
+  else if (host && pv) host = { ...host, protocolVersion: pv };
+}
 async function callTool(name, args) {
   switch (name) {
     case "audit_repo_token_waste": {
@@ -1206,7 +1227,7 @@ async function callTool(name, args) {
     case "optimize_prompt_payload": {
       const base = serviceUrl();
       if (!base) throw new Error("set TOKENZERO_URL to use this tool (the cache formatter runs in the TokenZero service)");
-      const r = await fetch(base + "/mcp", { method: "POST", redirect: "manual", signal: AbortSignal.timeout(2e4), headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) }).catch((e) => {
+      const r = await fetch(base + "/mcp", { method: "POST", redirect: "manual", signal: AbortSignal.timeout(2e4), headers: { "content-type": "application/json", "user-agent": `tokenzero-mcp/${VERSION}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args, ...host ? { _meta: { "io.tokenzero/host": host } } : {} } }) }).catch((e) => {
         throw new Error(`could not reach the TokenZero service at ${base} (${e?.cause?.code ?? e?.message ?? e}); set TOKENZERO_URL to use a different one`);
       });
       if (r.status >= 300 && r.status < 400) throw new Error(`${base} is not publicly reachable yet (redirected)`);
@@ -1277,6 +1298,7 @@ async function handle(m) {
       return { content: [{ type: "text", text: `error: ${e?.message ?? e}` }], isError: true };
     }
   };
+  if (m?.method === "initialize" || isModern(m)) noteHost(m);
   try {
     if (isModern(m)) {
       const v = requestedVersion(m);

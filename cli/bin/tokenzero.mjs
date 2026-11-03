@@ -916,11 +916,13 @@ function providerOfKeyPrefix(key) {
   if (k.startsWith("sk-")) return "openai";
   return null;
 }
-function request(p, key, base) {
+function request(p, key, base, scheme = "x-api-key", extra = {}) {
   const b = base.replace(/\/+$/, "");
   switch (p) {
+    // #3024: the same scheme the caller uses (Anthropic's primary scheme is Authorization: Bearer, which is also the only one
+    // short-lived WIF/OAuth access tokens accept), plus the caller's anthropic-workspace-id for keys not scoped to a workspace.
     case "anthropic":
-      return { url: `${b}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
+      return { url: `${b}/v1/models?limit=1`, headers: { ...scheme === "bearer" ? { authorization: `Bearer ${key}` } : { "x-api-key": key }, "anthropic-version": "2023-06-01", ...extra } };
     case "gemini":
       return { url: `${b}/v1beta/models?pageSize=1`, headers: { "x-goog-api-key": key } };
     case "openrouter":
@@ -932,14 +934,14 @@ function request(p, key, base) {
     case "github":
       return { url: `${b}/catalog/models`, headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github+json" } };
     default:
-      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}` } };
+      return { url: `${b}/v1/models`, headers: { authorization: `Bearer ${key}`, ...extra } };
   }
 }
 async function checkProviderKey(key, opts = {}) {
   const provider = opts.provider ?? providerOfKeyPrefix(key) ?? "openai";
   const name = NAME[provider];
   const sandbox = opts.sandboxUrl ? `curl ${opts.sandboxUrl} -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'` : void 0;
-  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider]);
+  const { url, headers } = request(provider, key.trim(), opts.base ?? DEFAULT_BASE[provider], opts.scheme, opts.headers);
   let status = null;
   try {
     const r = await (opts.fetchImpl ?? fetch)(url, { headers: { ...headers, "user-agent": "tokenzero-keycheck/1" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 8e3), redirect: "manual" });
@@ -958,8 +960,15 @@ async function checkProviderKey(key, opts = {}) {
       return { provider, provider_name: name, ok: true, status, verdict: "valid", message: `${name} accepted this key.`, link: CONSOLE[provider].keys };
     }
     const rem = classifyProviderError(provider, r.status, body, { key, model: opts.model });
-    if (rem?.cause === "wrong_provider") return { provider, provider_name: name, ok: false, status, verdict: "wrong_provider", message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox };
-    if (r.status === 401 || geminiBad) return { provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
+    let pe;
+    try {
+      const j = JSON.parse(body);
+      pe = String(j?.error?.message ?? j?.message ?? j?.error ?? "").slice(0, 300) || void 0;
+    } catch {
+      pe = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || void 0;
+    }
+    if (rem?.cause === "wrong_provider") return { provider, provider_name: name, ok: false, status, verdict: "wrong_provider", message: rem.message, fix: rem.fix, link: rem.link, keyless_sandbox: sandbox, provider_error: pe };
+    if (r.status === 401 || geminiBad) return { provider_error: pe, provider, provider_name: name, ok: false, status, verdict: "invalid", message: `${name} rejected this key (HTTP ${r.status}): it is not a valid ${name} key (revoked, mistyped, or for another provider).`, fix: `Create or copy a key at the ${name} console and set ${KEY_ENV[provider][0]}.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 403) return { provider, provider_name: name, ok: false, status, verdict: "no_access", message: `${name} recognised the key but refused access (HTTP 403): check its permissions, project or billing.`, link: CONSOLE[provider].keys, keyless_sandbox: sandbox };
     if (r.status === 429) return { provider, provider_name: name, ok: true, status, verdict: "rate_limited", message: `${name} rate-limited the check (HTTP 429); the key itself was accepted.` };
     return { provider, provider_name: name, ok: false, status, verdict: "unknown", message: `${name} answered HTTP ${r.status}; the key could not be confirmed.` };
@@ -992,6 +1001,8 @@ function classifyProviderError(provider, status, body, opts = {}) {
   const name = NAME[provider], c2 = CONSOLE[provider], b = body.toLowerCase();
   const keyProvider2 = opts.key ? providerOfKeyPrefix(opts.key) : null;
   const env = KEY_ENV[provider][0];
+  if (provider === "openai" && (status === 401 || status === 403) && /openai-organization|openai-project|mismatched_organization|mismatched_project|does not match.*(organization|project)|not.*member of.*organization/.test(b))
+    return { cause: "org_project_mismatch", message: "OpenAI accepted the key, but the OpenAI-Organization or OpenAI-Project header sent with it does not match the key.", fix: "Remove the OpenAI-Organization / OpenAI-Project headers, or set them to the org and project the key belongs to (a project key sk-proj-\u2026 needs no project header).", link: c2.keys };
   if (status === 401 || provider === "gemini" && status === 400 && /api_key_invalid|api key not valid/.test(b) || provider === "openrouter" && /user not found|no auth credentials/.test(b)) {
     if (keyProvider2 && keyProvider2 !== provider && !(keyProvider2 === "openai" && provider === "deepseek"))
       return { cause: "wrong_provider", message: `This looks like a ${NAME[keyProvider2]} key, but the request went to ${name}.`, fix: `Use a model from ${NAME[keyProvider2]} with this key, or send X-TokenZero-Provider: ${keyProvider2}.`, link: CONSOLE[keyProvider2].keys };
@@ -1005,6 +1016,8 @@ function classifyProviderError(provider, status, body, opts = {}) {
   if (status === 403) return { cause: "permission", message: `${name} recognised the key but refused this request (HTTP 403): check the key's permissions, project or region.`, fix: `Open the key's settings and allow this API/model, or create a key with full access.`, link: c2.keys };
   if (status === 429) return { cause: "rate_limited", message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: "Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.", link: c2.keys };
   const sp = STATUS_PAGE[provider] ?? c2.keys;
+  if (provider === "anthropic" && (status === 400 || status === 404) && /anthropic-workspace-id|not scoped to a workspace|workspace `?[\w-]*`? not found/.test(b))
+    return { cause: "workspace_required", message: status === 404 ? "Anthropic accepted the key, but the workspace in anthropic-workspace-id does not exist or the key has no access to it." : "Anthropic accepted the key, but it is not scoped to a workspace, so each request must name one.", fix: "Send anthropic-workspace-id: <wrkspc_\u2026> (the ID column on the Console Workspaces page) with each request, or use a key scoped to one workspace.", link: "https://platform.claude.com/settings/workspaces" };
   if (status === 413 || /request entity too large|payload too large|request too large/.test(b))
     return { cause: "payload_too_large", message: `${name} refused the request as too large (HTTP ${status}).`, fix: "Send fewer or smaller messages/attachments, or split the request.", link: c2.keys };
   if (status === 400 && /context length|context_length|maximum context|context window|too many tokens|prompt is too long|input is too long|max_tokens.*exceed|exceeds the maximum/.test(b))
@@ -1026,7 +1039,7 @@ function canonical(obj) {
 }
 
 // cli/src/main.ts
-var VERSION = "0.2.15";
+var VERSION = "0.2.16";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 function parseArgs(argv) {
   const a = { _: [], flags: {} };
@@ -1462,6 +1475,35 @@ ${bold(f.title)}
     process.exitCode = 1;
   }
 }
+async function cmdClaim(a) {
+  const saved = loadCreds();
+  const base = baseUrl(a) || saved?.url || "https://tokenzero.sh";
+  const key = a.flags.key || process.env.TOKENZERO_KEY || saved?.api_key || "";
+  if (!key) {
+    err(red("claim: no workspace key. Run `npx tokenzero init` first, or pass --key / TOKENZERO_KEY."));
+    process.exitCode = 1;
+    return;
+  }
+  const h = { "x-tokenzero-key": key, "content-type": "application/json" };
+  if (a.flags.remove) {
+    const r2 = await api(base, "/v1/workspaces/me/claim", { method: "DELETE", headers: h });
+    out(r2.status === 200 ? green("Removed: this workspace has no contact email now.") : red(`claim: ${r2.status}`));
+    return;
+  }
+  const email = a._[1];
+  if (!email) {
+    const r2 = await api(base, "/v1/workspaces/me/claim", { headers: h });
+    out(r2.body?.claimed ? `Claimed (${r2.body.source}, since ${r2.body.since}). Remove: npx tokenzero claim --remove` : "Not claimed. Optional: npx tokenzero claim you@example.com  (weekly savings report; free use never needs it)");
+    return;
+  }
+  const r = await api(base, "/v1/workspaces/me/claim", { method: "POST", headers: h, body: JSON.stringify({ email, consent: true, source: "cli" }) });
+  if (r.status !== 200) {
+    err(red(`claim: ${r.status} ${r.body?.error?.message ?? ""}`));
+    process.exitCode = 1;
+    return;
+  }
+  out(green("Claimed.") + " This address is used only for this workspace's savings emails. Remove any time: npx tokenzero claim --remove");
+}
 async function cmdMetrics(a) {
   const saved = loadCreds();
   const base = baseUrl(a) || saved?.url || "https://tokenzero.sh";
@@ -1687,6 +1729,7 @@ function help() {
   ${bold("tokenzero usage")} [--json]          Routed spend vs the free tier, savings, fee preview.
   ${bold("tokenzero doctor")} [--key K] [--json] Six-check connection and receipt doctor: gateway, signer, pricing, key, quota, settings.
   ${bold("tokenzero metrics")} [--window 24h|7d|30d|all] [--key K] [--json] [--demo]  Value scorecard: savings, ROI, engines, speed, parity, reliability, per-model, recommendations.
+  ${bold("tokenzero claim")} [email] [--remove]  Optional: a weekly savings report email for this workspace (opt-in, never required).
   ${bold("tokenzero verify")} <request_id>     Verify a savings receipt's signature offline.
   ${bold("tokenzero verify --chain")} [--limit N]  Verify the workspace's append-only receipt chain (signatures, seq, prev hashes).
   ${bold("tokenzero rotate-key")} [--yes]      Issue a new workspace key; rewrites it in .env. Old key dies immediately.
@@ -1716,6 +1759,8 @@ async function main() {
       return cmdDoctor(a);
     case "metrics":
       return cmdMetrics(a);
+    case "claim":
+      return cmdClaim(a);
     case "verify":
       return cmdVerify(a);
     case "rotate-key":
