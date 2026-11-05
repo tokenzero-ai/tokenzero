@@ -16,7 +16,7 @@ import { walk, manifests } from './scan.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 import { canonical } from '../../src/canonical.ts';
 
-const VERSION = '0.2.16';
+const VERSION = '0.3.0';
 // Replaced when the bundle is served or published; unreplaced means "ask for --url".
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our

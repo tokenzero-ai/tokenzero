@@ -12,12 +12,12 @@ import readline from 'node:readline';
 import { analyzeFiles, filesFromDiff } from '../../src/audit-core.ts';
 import { fetchRepoFiles } from '../../src/github-fetch.ts';
 import { modelArbitrage } from '../../src/arbitrage.ts';
-import { MCP_LEGACY_VERSIONS, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
+import { MCP_LEGACY_VERSIONS, isHandshake, RPC, isModern, requestedVersion, versionSupported, unsupportedVersionError, modernResult, discoverResult } from '../../src/mcp-protocol.ts';
 import { walk, manifests } from '../../cli/src/scan.ts';
 import { EVENT_TYPES, EVENTS_EXTENSION, EVENT_ERR } from '../../src/events-types.ts';
 import { checkProviderKey, keysInEnv } from '../../src/keycheck.ts';
 
-const VERSION = '0.2.16';
+const VERSION = '0.3.0';
 declare const __TOKENZERO_BAKED__: string | undefined;
 // Set at build time by scripts/bake-default-url.sh (only after the URL is proven to be our
 // gateway); otherwise a placeholder the gateway replaces when it serves the bundle.
@@ -188,7 +188,7 @@ async function handle(m: any) {
   };
   if (m?.method === 'initialize' || isModern(m)) noteHost(m);
   try {
-    if (isModern(m)) {
+    if (isModern(m) && !isHandshake(m)) {
       // ---- 2026-07-28: no handshake; version and identity travel on every request ----
       const v = requestedVersion(m)!;
       if (!versionSupported(v)) { const e = unsupportedVersionError(v); return failData(e.code, e.message, e.data); }

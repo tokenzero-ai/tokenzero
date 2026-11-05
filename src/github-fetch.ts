@@ -8,12 +8,22 @@ const UA = 'TokenZero-Audit/0.1 (+https://tokenzero.sh)';
 const ghHeaders = (token?: string): Record<string, string> => ({ 'user-agent': UA, accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) });
 
 export interface FetchOptions { token?: string; maxFiles?: number; }
+/** #3146: the REST quota GitHub reported on the latest call (X-RateLimit-*): limit 5000 proves an authenticated token,
+ *  60 means the call went out unauthenticated. Read by the service for telemetry and a one-time log line. */
+export interface GithubRateLimit { limit: number | null; remaining: number | null; reset_iso: string | null; authenticated: boolean; resource: string | null; at: number }
+export let lastGithubRateLimit: GithubRateLimit | null = null;
+function noteRateLimit(r: Response, authenticated: boolean) {
+  const n = (k: string) => { const v = r.headers.get(k); return v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null; };
+  const reset = n('x-ratelimit-reset');
+  lastGithubRateLimit = { limit: n('x-ratelimit-limit'), remaining: n('x-ratelimit-remaining'), reset_iso: reset ? new Date(reset * 1000).toISOString() : null, authenticated, resource: r.headers.get('x-ratelimit-resource'), at: Date.now() };
+}
 
 
 export async function fetchRepoFiles(repo: string, opts: FetchOptions = {}): Promise<{ files: SourceFile[]; manifests: SourceFile[]; branch: string; total_candidates: number; full_name: string }> {
   const maxFiles = opts.maxFiles ?? 120;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('repo must look like owner/name');
   const meta = await fetch(`${GH}/repos/${repo}`, { headers: ghHeaders(opts.token) });
+  noteRateLimit(meta, !!opts.token);
   if (meta.status === 404) throw new Error('repository not found (private repos are not supported)');
   if (!meta.ok) throw new Error(`GitHub API ${meta.status}: ${(await meta.text()).slice(0, 200)}`);
   // GitHub answers a renamed or transferred repository under its current owner/name (full_name).

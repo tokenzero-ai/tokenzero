@@ -3,6 +3,7 @@
 // request fails. Self-contained so the CLI and the stdio MCP bundle can run it locally: from those, the key goes only
 // to the provider, never to TokenZero. Nothing here logs or stores a key.
 
+import { modelSunset, priceFor, closestModel } from './pricing.ts';
 export type CheckProvider = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'xai' | 'deepseek' | 'groq' | 'mistral' | 'cerebras' | 'github';
 export const KEY_ENV: Record<CheckProvider, string[]> = {
   openai: ['OPENAI_API_KEY'], anthropic: ['ANTHROPIC_API_KEY'], gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], openrouter: ['OPENROUTER_API_KEY'],
@@ -88,7 +89,7 @@ export function keysInEnv(env: Record<string, string | undefined>): { provider: 
 }
 
 // ---- #2725: one map from a provider's error to the specific cause, fix and console page --------------------------
-export type FailureCause = 'invalid_key' | 'wrong_provider' | 'workspace_required' | 'org_project_mismatch' | 'no_model_access' | 'billing' | 'permission' | 'rate_limited' | 'context_length' | 'bad_request' | 'not_found' | 'payload_too_large' | 'timeout' | 'upstream_error' | 'unreachable' | 'unknown';
+export type FailureCause = 'invalid_key' | 'wrong_provider' | 'model_retired' | 'workspace_required' | 'org_project_mismatch' | 'no_model_access' | 'billing' | 'permission' | 'rate_limited' | 'context_length' | 'bad_request' | 'not_found' | 'payload_too_large' | 'timeout' | 'upstream_error' | 'unreachable' | 'unknown';
 /** Provider status pages, for failures on the provider's side (5xx, timeouts, unreachable). */
 export const STATUS_PAGE: Partial<Record<CheckProvider, string>> = { openai: 'https://status.openai.com', anthropic: 'https://status.anthropic.com', gemini: 'https://aistudio.google.com/status', openrouter: 'https://status.openrouter.ai', xai: 'https://status.x.ai', deepseek: 'https://status.deepseek.com', github: 'https://www.githubstatus.com' };
 export const CONSOLE: Record<CheckProvider, { keys: string; billing?: string }> = {
@@ -103,7 +104,7 @@ export const CONSOLE: Record<CheckProvider, { keys: string; billing?: string }> 
   cerebras: { keys: 'https://cloud.cerebras.ai' },
   github: { keys: 'https://github.com/settings/tokens' },
 };
-export interface Remediation { cause: FailureCause; message: string; fix: string; link: string }
+export interface Remediation { cause: FailureCause; message: string; fix: string; link: string; /** #3309: the model to switch to (retired model) or the closest known id (typo) */ replacement?: string; did_you_mean?: string }
 
 /** Turn a provider's HTTP status + error body into the specific cause and the one thing to do about it. */
 export function classifyProviderError(provider: CheckProvider, status: number, body: string, opts: { key?: string; model?: string | null } = {}): Remediation | null {
@@ -121,8 +122,14 @@ export function classifyProviderError(provider: CheckProvider, status: number, b
   }
   if (status === 402 || /insufficient_quota|exceeded your current quota|credit balance is too low|insufficient credits|billing|payment required/.test(b))
     return { cause: 'billing', message: `${name} accepted the key but refused to bill it (${status === 402 ? 'HTTP 402' : 'no credit or quota'}).`, fix: `Add credit or enable billing for this ${name} account, then retry.`, link: c.billing ?? c.keys };
-  if (status === 404 && /model/.test(b) || /does not have access to model|model_not_found|not have access to|is not available for your|you do not have access/.test(b))
+  if (status === 404 && /model/.test(b) || /does not have access to model|model_not_found|not have access to|is not available for your|you do not have access/.test(b)) {
+    // #3309: a model the provider has retired names its replacement; an unknown id gets the closest priced id.
+    const sun = opts.model ? modelSunset(opts.model) : null;
+    if (sun?.retired) return { cause: 'model_retired', message: `${name} retired model "${opts.model}" on ${sun.retires}.`, fix: `Switch model to ${sun.replacement}.`, link: c.keys, replacement: sun.replacement };
+    const near = opts.model && !priceFor(opts.model) ? closestModel(opts.model, provider) : null;
+    if (near) return { cause: 'no_model_access', message: `${name} does not know model "${opts.model}".`, fix: `Did you mean ${near}? Set model to ${near}.`, link: c.keys, did_you_mean: near };
     return { cause: 'no_model_access', message: `${name} accepted the key, but it has no access to ${opts.model ? `model "${opts.model}"` : 'the requested model'}.`, fix: `Pick a model this key can use (GET the provider's models list) or request access for this model.`, link: c.keys };
+  }
   if (status === 403) return { cause: 'permission', message: `${name} recognised the key but refused this request (HTTP 403): check the key's permissions, project or region.`, fix: `Open the key's settings and allow this API/model, or create a key with full access.`, link: c.keys };
   if (status === 429) return { cause: 'rate_limited', message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: 'Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.', link: c.keys };
   // Everything else a provider can answer: one specific cause per class, never a raw error (#2789).

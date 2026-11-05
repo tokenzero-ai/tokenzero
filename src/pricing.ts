@@ -105,6 +105,9 @@ export const PRICES: Record<string, Price> = {
   // ---- Anthropic (cache write = 5-minute TTL, 1.25x; 1h TTL is 2x) ----
   'claude-fable-5-1': P('anthropic', 'frontier', 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
   'claude-fable-5': P('anthropic', 'frontier', 10, 50, 1, 12.5, { minCacheTokens: 512 }),
+  // Claude Mythos 5.1 / 5: limited availability; priced as Fable 5.1 / 5 (pricing page, read 2026-11-04).
+  'claude-mythos-5-1': P('anthropic', 'frontier', 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
+  'claude-mythos-5': P('anthropic', 'frontier', 10, 50, 1, 12.5, { minCacheTokens: 512 }),
   'claude-opus-5-5': P('anthropic', 'frontier', 4, 20, 0.2, 5, { minCacheTokens: 512 }),
   'claude-opus-5': P('anthropic', 'frontier', 5, 25, 0.5, 6.25, { minCacheTokens: 512 }),
   'claude-opus-4-8': P('anthropic', 'frontier', 5, 25, 0.5, 6.25, { minCacheTokens: 1024 }),
@@ -117,6 +120,9 @@ export const PRICES: Record<string, Price> = {
   'claude-sonnet-4-5': P('anthropic', 'mid', 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
   'claude-haiku-5-5': P('anthropic', 'fast', 0.1, 0.5, 0.01, 0.125, { minCacheTokens: 512, longCtxAt: 100_000, longCtx: { input: 0.5, output: 2.5, cachedInput: 0.05, cacheWrite: 0.625 } }),
   'claude-haiku-4-5': P('anthropic', 'fast', 1, 5, 0.1, 1.25, { minCacheTokens: 4096 }),
+  // Retired on the Claude API on 2026-02-19 (still billed on Google-managed Vertex): priced so a -latest call gets the
+  // retirement warning with its replacement instead of "not in the pricing table".
+  'claude-3-5-haiku': P('anthropic', 'fast', 0.8, 4, 0.08, 1, { minCacheTokens: 2048 }),
 
   // ---- Google Gemini (paid tier; prices scheduled to rise Dec 2026/Jan 2027 — re-verify) ----
   'gemini-4-argon': P('gemini', 'frontier', 2, 10, 0.1),
@@ -175,6 +181,8 @@ export const CASCADE_TARGET: Record<string, string> = {
   'o3': 'o4-mini',
   'claude-fable-5-1': 'claude-opus-5-5',
   'claude-fable-5': 'claude-opus-5-5',
+  'claude-mythos-5-1': 'claude-opus-5-5',
+  'claude-mythos-5': 'claude-opus-5-5',
   'claude-opus-5-5': 'claude-sonnet-5-5',
   'claude-opus-5': 'claude-sonnet-5-5',
   'claude-opus-4-8': 'claude-sonnet-5-5',
@@ -372,6 +380,7 @@ export const MODEL_SUNSET: Record<string, Sunset> = {
   'o3-mini': { retires: '2026-10-23', replacement: 'gpt-5.6-sol', announced: '2026-04-22' },
   'o4-mini': { retires: '2026-10-23', replacement: 'gpt-5.6-terra', announced: '2026-04-22' },
   'claude-sonnet-4-5': { retires: '2026-11-30', replacement: 'claude-sonnet-5-5', announced: '2026-09-30' },
+  'claude-3-5-haiku': { retires: '2026-02-19', replacement: 'claude-haiku-5-5', announced: '2025-12-19' },
 };
 export interface SunsetStatus extends Sunset { key: string; retired: boolean; days_left: number }
 /** Lifecycle of a model id as of `at`: null when the provider has not announced a retirement. */
@@ -380,4 +389,17 @@ export function modelSunset(model: unknown, at: Date = new Date()): SunsetStatus
   const s = MODEL_SUNSET[key]; if (!s) return null;
   const days = Math.ceil((Date.parse(s.retires + 'T00:00:00Z') - at.getTime()) / 86_400_000);
   return { key, ...s, retired: days <= 0, days_left: Math.max(0, days) };
+}
+
+/** #3309: the closest priced model id of a provider to an unknown id (a typo such as gpt-6-lunar -> gpt-6-luna), or null
+ *  when nothing is within a small edit distance. Retired models are never suggested. */
+export function closestModel(model: string, provider: string): string | null {
+  const m = model.toLowerCase().trim().replace(/^[\w-]+\//, ''); if (!m || m.length > 80) return null;
+  const lev = (a: string, b: string) => { const d = Array.from({ length: b.length + 1 }, (_, j) => j); for (let i = 1; i <= a.length; i++) { let prev = d[0]; d[0] = i; for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; } } return d[b.length]; };
+  let best: string | null = null, bestD = Infinity;
+  for (const [k, p] of Object.entries(PRICES)) {
+    if (p.provider !== provider || MODEL_SUNSET[k]) continue;
+    const dist = lev(m, k); if (dist < bestD) { bestD = dist; best = k; }
+  }
+  return best && bestD <= Math.max(2, Math.floor(m.length / 6)) ? best : null;
 }

@@ -1,9 +1,11 @@
 # TokenZero tools
 
-Open-source tools from [TokenZero](https://tokenzero.sh), the bring-your-own-key gateway that cuts OpenAI, Anthropic and Gemini bills.
+Open-source tools from [TokenZero](https://tokenzero.sh), the independent ledger of record for AI spend (metering, attribution, budget control, audit).
+
+- **The receipt verifier** (`verifier/tokenzero-verify.mjs`) checks a TokenZero receipt without trusting TokenZero: Ed25519 signature over canonical JSON, the savings-bucket math and the hash chain. Zero dependencies; library or CLI. The format is specified in `docs/receipt-spec.md`.
 
 - **`@tokenzero/mcp`** is a stdio MCP server for Claude Code, Cursor, Windsurf and Cline: audit the open project for token waste (locally), price model alternatives, make request bodies cache-friendly.
-- **`@tokenzero/cli`** connects a project to the gateway with no code changes, audits LLM token waste locally, shows usage and verifies signed savings receipts.
+- **`@tokenzero/cli`** connects a project to the ledger (through the gateway sensor) with no code changes, audits LLM token waste locally, shows usage and verifies signed savings receipts.
 - **The analyzer** (`src/audit-core.ts`) is the static token-waste audit used by the CLI, the hosted repo audit and the PR cost-diff check. It runs entirely on your machine.
 - **The pricing table** (`src/pricing.ts`) lists the list prices every estimate is computed from, versioned and dated.
 

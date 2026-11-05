@@ -1,7 +1,7 @@
 {
   "name": "@tokenzero/cli",
-  "version": "0.2.16",
-  "description": "TokenZero CLI: connect a project to the TokenZero BYOK gateway, audit LLM token waste locally, check usage and verify signed savings receipts.",
+  "version": "0.3.0",
+  "description": "TokenZero CLI: connect a project to the TokenZero ledger of record for AI spend, audit LLM token waste locally, check usage and verify signed receipts offline.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "TokenZero Contributors <support@tokenzero.sh>",

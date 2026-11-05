@@ -10,7 +10,12 @@
 // A request is modern when its _meta names a protocol version; otherwise it is served
 // with legacy semantics. Both eras are served on the same endpoint or process.
 export const MCP_MODERN_VERSIONS = ['2026-07-28'] as const;
-export const MCP_LEGACY_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const;
+// #3112: 2024-11-05 is still what many hosts and agent runtimes send; answering it with a newer version makes a strict
+// client disconnect at initialize. Our tools/list and tools/call results are valid in it (extra fields are ignored).
+export const MCP_LEGACY_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
+/** #3112: initialize is always the legacy handshake, even when a dual-era client also puts a version in _meta (answering it
+ *  with -32601 strands the client at initialize). ping stays modern-era-strict: 2026-07-28 removed it. */
+export const isHandshake = (m: any): boolean => m?.method === 'initialize';
 
 export const META = {
   version: 'io.modelcontextprotocol/protocolVersion',

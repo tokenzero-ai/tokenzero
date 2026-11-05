@@ -60,6 +60,9 @@ var PRICES = {
   // ---- Anthropic (cache write = 5-minute TTL, 1.25x; 1h TTL is 2x) ----
   "claude-fable-5-1": P("anthropic", "frontier", 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
   "claude-fable-5": P("anthropic", "frontier", 10, 50, 1, 12.5, { minCacheTokens: 512 }),
+  // Claude Mythos 5.1 / 5: limited availability; priced as Fable 5.1 / 5 (pricing page, read 2026-11-04).
+  "claude-mythos-5-1": P("anthropic", "frontier", 10, 50, 0.25, 12.5, { minCacheTokens: 512 }),
+  "claude-mythos-5": P("anthropic", "frontier", 10, 50, 1, 12.5, { minCacheTokens: 512 }),
   "claude-opus-5-5": P("anthropic", "frontier", 4, 20, 0.2, 5, { minCacheTokens: 512 }),
   "claude-opus-5": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 512 }),
   "claude-opus-4-8": P("anthropic", "frontier", 5, 25, 0.5, 6.25, { minCacheTokens: 1024 }),
@@ -73,6 +76,9 @@ var PRICES = {
   "claude-sonnet-4-5": P("anthropic", "mid", 3, 15, 0.3, 3.75, { minCacheTokens: 1024 }),
   "claude-haiku-5-5": P("anthropic", "fast", 0.1, 0.5, 0.01, 0.125, { minCacheTokens: 512, longCtxAt: 1e5, longCtx: { input: 0.5, output: 2.5, cachedInput: 0.05, cacheWrite: 0.625 } }),
   "claude-haiku-4-5": P("anthropic", "fast", 1, 5, 0.1, 1.25, { minCacheTokens: 4096 }),
+  // Retired on the Claude API on 2026-02-19 (still billed on Google-managed Vertex): priced so a -latest call gets the
+  // retirement warning with its replacement instead of "not in the pricing table".
+  "claude-3-5-haiku": P("anthropic", "fast", 0.8, 4, 0.08, 1, { minCacheTokens: 2048 }),
   // ---- Google Gemini (paid tier; prices scheduled to rise Dec 2026/Jan 2027 — re-verify) ----
   "gemini-4-argon": P("gemini", "frontier", 2, 10, 0.1),
   "gemini-3.8-flash": P("gemini", "fast", 0.75, 3.75, 0.075),
@@ -113,6 +119,8 @@ var CASCADE_TARGET = {
   "o3": "o4-mini",
   "claude-fable-5-1": "claude-opus-5-5",
   "claude-fable-5": "claude-opus-5-5",
+  "claude-mythos-5-1": "claude-opus-5-5",
+  "claude-mythos-5": "claude-opus-5-5",
   "claude-opus-5-5": "claude-sonnet-5-5",
   "claude-opus-5": "claude-sonnet-5-5",
   "claude-opus-4-8": "claude-sonnet-5-5",
@@ -188,7 +196,8 @@ var MODEL_SUNSET = {
   "o3-pro": { retires: "2026-12-11", replacement: "gpt-5.6-sol", announced: "2026-06-11" },
   "o3-mini": { retires: "2026-10-23", replacement: "gpt-5.6-sol", announced: "2026-04-22" },
   "o4-mini": { retires: "2026-10-23", replacement: "gpt-5.6-terra", announced: "2026-04-22" },
-  "claude-sonnet-4-5": { retires: "2026-11-30", replacement: "claude-sonnet-5-5", announced: "2026-09-30" }
+  "claude-sonnet-4-5": { retires: "2026-11-30", replacement: "claude-sonnet-5-5", announced: "2026-09-30" },
+  "claude-3-5-haiku": { retires: "2026-02-19", replacement: "claude-haiku-5-5", announced: "2025-12-19" }
 };
 function modelSunset(model, at = /* @__PURE__ */ new Date()) {
   const key = normalizeModel(model);
@@ -197,6 +206,33 @@ function modelSunset(model, at = /* @__PURE__ */ new Date()) {
   if (!s) return null;
   const days = Math.ceil((Date.parse(s.retires + "T00:00:00Z") - at.getTime()) / 864e5);
   return { key, ...s, retired: days <= 0, days_left: Math.max(0, days) };
+}
+function closestModel(model, provider) {
+  const m = model.toLowerCase().trim().replace(/^[\w-]+\//, "");
+  if (!m || m.length > 80) return null;
+  const lev = (a, b) => {
+    const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = d[0];
+      d[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const t = d[j];
+        d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = t;
+      }
+    }
+    return d[b.length];
+  };
+  let best = null, bestD = Infinity;
+  for (const [k, p] of Object.entries(PRICES)) {
+    if (p.provider !== provider || MODEL_SUNSET[k]) continue;
+    const dist = lev(m, k);
+    if (dist < bestD) {
+      bestD = dist;
+      best = k;
+    }
+  }
+  return best && bestD <= Math.max(2, Math.floor(m.length / 6)) ? best : null;
 }
 
 // cli/src/tokens-lite.ts
@@ -808,10 +844,20 @@ function filesFromDiff(diff) {
 var GH = "https://api.github.com";
 var UA = "TokenZero-Audit/0.1 (+https://tokenzero.sh)";
 var ghHeaders = (token) => ({ "user-agent": UA, accept: "application/vnd.github+json", ...token ? { authorization: `Bearer ${token}` } : {} });
+var lastGithubRateLimit = null;
+function noteRateLimit(r, authenticated) {
+  const n = (k) => {
+    const v = r.headers.get(k);
+    return v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
+  };
+  const reset = n("x-ratelimit-reset");
+  lastGithubRateLimit = { limit: n("x-ratelimit-limit"), remaining: n("x-ratelimit-remaining"), reset_iso: reset ? new Date(reset * 1e3).toISOString() : null, authenticated, resource: r.headers.get("x-ratelimit-resource"), at: Date.now() };
+}
 async function fetchRepoFiles(repo, opts = {}) {
   const maxFiles = opts.maxFiles ?? 120;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("repo must look like owner/name");
   const meta = await fetch(`${GH}/repos/${repo}`, { headers: ghHeaders(opts.token) });
+  noteRateLimit(meta, !!opts.token);
   if (meta.status === 404) throw new Error("repository not found (private repos are not supported)");
   if (!meta.ok) throw new Error(`GitHub API ${meta.status}: ${(await meta.text()).slice(0, 200)}`);
   const metaJson = await meta.json(), branch = metaJson.default_branch, fullName = typeof metaJson.full_name === "string" ? metaJson.full_name : repo;
@@ -866,7 +912,8 @@ function modelArbitrage(args) {
 
 // src/mcp-protocol.ts
 var MCP_MODERN_VERSIONS = ["2026-07-28"];
-var MCP_LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
+var MCP_LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+var isHandshake = (m) => m?.method === "initialize";
 var META = {
   version: "io.modelcontextprotocol/protocolVersion",
   clientInfo: "io.modelcontextprotocol/clientInfo",
@@ -1100,8 +1147,13 @@ function classifyProviderError(provider, status, body, opts = {}) {
   }
   if (status === 402 || /insufficient_quota|exceeded your current quota|credit balance is too low|insufficient credits|billing|payment required/.test(b))
     return { cause: "billing", message: `${name} accepted the key but refused to bill it (${status === 402 ? "HTTP 402" : "no credit or quota"}).`, fix: `Add credit or enable billing for this ${name} account, then retry.`, link: c.billing ?? c.keys };
-  if (status === 404 && /model/.test(b) || /does not have access to model|model_not_found|not have access to|is not available for your|you do not have access/.test(b))
+  if (status === 404 && /model/.test(b) || /does not have access to model|model_not_found|not have access to|is not available for your|you do not have access/.test(b)) {
+    const sun = opts.model ? modelSunset(opts.model) : null;
+    if (sun?.retired) return { cause: "model_retired", message: `${name} retired model "${opts.model}" on ${sun.retires}.`, fix: `Switch model to ${sun.replacement}.`, link: c.keys, replacement: sun.replacement };
+    const near = opts.model && !priceFor(opts.model) ? closestModel(opts.model, provider) : null;
+    if (near) return { cause: "no_model_access", message: `${name} does not know model "${opts.model}".`, fix: `Did you mean ${near}? Set model to ${near}.`, link: c.keys, did_you_mean: near };
     return { cause: "no_model_access", message: `${name} accepted the key, but it has no access to ${opts.model ? `model "${opts.model}"` : "the requested model"}.`, fix: `Pick a model this key can use (GET the provider's models list) or request access for this model.`, link: c.keys };
+  }
   if (status === 403) return { cause: "permission", message: `${name} recognised the key but refused this request (HTTP 403): check the key's permissions, project or region.`, fix: `Open the key's settings and allow this API/model, or create a key with full access.`, link: c.keys };
   if (status === 429) return { cause: "rate_limited", message: `${name} rate-limited this request (HTTP 429); the key works.`, fix: "Retry after a pause, or send X-TokenZero-Fallback: auto to fail over automatically.", link: c.keys };
   const sp = STATUS_PAGE[provider] ?? c.keys;
@@ -1120,7 +1172,7 @@ function classifyProviderError(provider, status, body, opts = {}) {
 }
 
 // mcp/src/main.ts
-var VERSION = "0.2.16";
+var VERSION = "0.3.0";
 var BAKED_URL = true ? "https://tokenzero.sh" : "__TOKENZERO_DEFAULT_URL__";
 var SUPPORTED = [...MCP_LEGACY_VERSIONS];
 var SERVER = { name: "tokenzero", version: VERSION };
@@ -1300,7 +1352,7 @@ async function handle(m) {
   };
   if (m?.method === "initialize" || isModern(m)) noteHost(m);
   try {
-    if (isModern(m)) {
+    if (isModern(m) && !isHandshake(m)) {
       const v = requestedVersion(m);
       if (!versionSupported(v)) {
         const e = unsupportedVersionError(v);
